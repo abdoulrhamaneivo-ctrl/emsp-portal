@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg[binary]>=3.2,<4
+pydantic>=2
+pydantic-settings
+passlib[bcrypt]
+python-multipart
+bcrypt<4.1
+pytest
+httpx

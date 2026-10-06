@@ -1,0 +1,73 @@
+{
+  "_commentaire": "Qui possède quel fichier. Une écriture hors périmètre est annulée automatiquement par arbitrer.py. Les vérificateurs n'écrivent jamais. Aligné sur le front actuel (Tailwind compilé) après l'abandon de frontend-v2.",
+  "version": 2,
+  "partages": [
+    "frontend/tailwind.config.js",
+    "frontend/src/app.css",
+    "frontend/src/legacy.css",
+    "frontend/css/app.css",
+    "frontend/js/nav.js",
+    "frontend/js/session.js",
+    "frontend/js/api.js",
+    "frontend/js/parcours.js",
+    "frontend/js/mobile.js"
+  ],
+  "agents": {
+    "R1": {
+      "role": "Identite et pages publiques",
+      "ecrit": [
+        "frontend/index.html",
+        "frontend/conditions.html",
+        "frontend/contacts.html",
+        "frontend/connexion.html"
+      ]
+    },
+    "R2": {
+      "role": "Portail candidat",
+      "ecrit": [
+        "frontend/candidature.html",
+        "frontend/js/candidature.js",
+        "frontend/js/documents.js",
+        "frontend/dashboard.html",
+        "frontend/js/dashboard.js",
+        "frontend/suivi.html",
+        "frontend/js/suivi.js",
+        "frontend/documents.html",
+        "frontend/admis.html",
+        "frontend/js/admis.js",
+        "frontend/convocation.html",
+        "frontend/js/convocation.js",
+        "frontend/profil.html",
+        "frontend/js/profil.js"
+      ]
+    },
+    "R3": {
+      "role": "Administration",
+      "ecrit": [
+        "frontend/admin.html",
+        "frontend/js/admin.js"
+      ]
+    },
+    "R4": {
+      "role": "Bibliotheque de composants mobiles",
+      "ecrit": [
+        "frontend/js/mobile.js"
+      ],
+      "note": "Passe en vague 1, avant tous les autres : sans elle, chaque agent construit la sienne."
+    },
+    "R5": {
+      "role": "Contenu et donnees reelles EMSP",
+      "ecrit": [
+        "backend/app/schemas.py"
+      ],
+      "note": "La source de verite des specialites, series et epreuves du concours est backend/app/schemas.py."
+    }
+  },
+  "verificateurs": {
+    "V1": "Mobile natif — 44 px, barre basse, aucun survol, aucune modale",
+    "V2": "Utilisateur — bachelier ouest-africain, telephone d'entree de gamme, 3G",
+    "V3": "Conformite — WCAG, performance, donnees personnelles, art. 28 loi 2013-450",
+    "V4": "Expertise EMSP — le contenu dit-il la verite, sans affirmation non sourcee",
+    "V5": "Verification automatique — l'agent de mesure, 0 ecart majeur attendu"
+  }
+}

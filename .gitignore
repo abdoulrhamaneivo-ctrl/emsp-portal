@@ -1,0 +1,31 @@
+# Secrets : la clé du fournisseur de lecture des pièces ne doit JAMAIS
+# être versionnée. Le fichier .env est lu par pydantic-settings.
+.env
+.env.*
+
+# Données locales et pièces candidates : ne jamais les publier
+*.db
+*.sqlite
+*.sqlite3
+backend/storage/
+storage/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Node : dépendances du build Tailwind. `frontend/css/app.css` est versionné
+# (c'est la feuille que le portail sert), `node_modules` ne l'est pas.
+node_modules/
+.venv/
+venv/
+
+# Feuille générée par l'agent de vérification frontend
+frontend/css/verif-repares.css
+
+# Sauvegardes d'anciennes feuilles de style
+frontend/css/*.bak
+.neon
+.DS_Store
+frontend/a1-pharmacy-1.0.0/

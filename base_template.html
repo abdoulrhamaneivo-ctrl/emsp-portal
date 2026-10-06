@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="fr">
+<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+
+		<title>EMSP — A pharmacy with time to explain</title>
+		<meta name="description" content="An independent community pharmacy. Repeat prescriptions, clinical services and a tightly edited range of everyday health products — with a pharmacist who has time to talk." />
+		<meta name="theme-color" content="#1c4032" />
+		<link rel="canonical" href="https://example.com/" />
+
+		<meta property="og:site_name" content="EMSP" />
+		<meta property="og:type" content="website" />
+		<meta property="og:url" content="https://example.com/" />
+		<meta property="og:title" content="EMSP — A pharmacy with time to explain" />
+		<meta property="og:description" content="An independent community pharmacy. Repeat prescriptions, clinical services and a tightly edited range of everyday health products — with a pharmacist who has time to talk." />
+		<meta name="twitter:card" content="summary" />
+
+		<link rel="icon" href="favicon.svg" type="image/svg+xml" />
+
+		<!-- The typeface used by the first line of every page. -->
+		<link
+			rel="preload"
+			href="fonts/archivo-latin-wdth-normal.woff2"
+			as="font"
+			type="font/woff2"
+			crossorigin
+		/>
+
+		<!-- Shared styles. Page-specific rules follow, so they can override. -->
+		<link rel="stylesheet" href="css/main.css" />
+		<link rel="stylesheet" href="css/pages/hero.css" />
+		<link rel="stylesheet" href="css/pages/home.css" />
+	    <link rel="stylesheet" href="css/emsp.css">
+</head>
+<body data-full-bleed>
+    <div class="page">
+        <header class="site-header site-header--over-media" data-site-header>
+				<nav class="site-header__inner" aria-label="Primary">
+					<div class="site-header__bar">
+						<!-- Left: wordmark -->
+						<a href="index.html" aria-label="EMSP Portail — home" data-nav-plain>
+							<span class="logo">
+					<span class="logo__mark" aria-hidden="true">EMSP</span>
+					<span class="logo__name">Portail</span>
+				</span>
+						</a>
+
+						<!-- Centre: navigation -->
+						<ul class="primary-nav" id="dynamic-nav">
+        <li><a href="/" class="nav-link">Accueil</a></li>
+        <li><a href="conditions.html" class="nav-link">Conditions</a></li>
+        <li><a href="contact.html" class="nav-link">Contact</a></li>
+    </ul>
+
+						<!-- Right: utilities -->
+						<div class="header-tools" id="dynamic-tools">
+        <a href="connexion.html" class="nav-link">Connexion</a>
+        <a href="candidater.html" class="nav-link nav-link--emphasis">Candidater</a>
+    </div>
+					</div>
+				</nav>
+
+				</header>
+        <main class="page__main" id="main">
+            {CONTENT}
+        </main>
+        <footer class="site-footer" data-surface="dark" style="padding: 4rem 2rem; background: #056839; color: white;">
+        <div class="shell">
+            <h2>EMSP</h2>
+            <p>École Multinationale Supérieure des Postes.<br>Institution intergouvernementale fondée en 1970.</p>
+            <p class="mt-4">© 2026 EMSP — Tous droits réservés.</p>
+        </div>
+    </footer>
+    </div>
+    <script src="js/main.js" type="module"></script>
+    <script src="js/emsp_app.js"></script>
+</body>
+</html>
