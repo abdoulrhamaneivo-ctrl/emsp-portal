@@ -17,9 +17,10 @@ import hashlib
 import os
 from datetime import date, datetime, timezone
 from typing import Any, Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -540,17 +541,15 @@ def telecharger_document_admin(
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
     request: Request = None,
-) -> FileResponse:
+) -> Response:
     """Téléchargement d'une pièce par l'administration — toujours journalisé."""
     doc = db.get(DocumentCandidature, document_id)
     if doc is None:
         raise HTTPException(status_code=404, detail="Document introuvable.")
     service = _service()
     try:
-        chemin = service._absolute_path(doc.chemin_relatif)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Fichier introuvable sur le serveur.")
-    if not os.path.isfile(chemin):
+        content = service.read_file(doc.chemin_relatif)
+    except (FileNotFoundError, ValueError):
         raise HTTPException(status_code=404, detail="Fichier introuvable sur le serveur.")
 
     journaliser(
@@ -562,10 +561,12 @@ def telecharger_document_admin(
         request,
     )
     db.commit()
-    return FileResponse(
-        chemin,
+    return Response(
+        content=content,
         media_type=doc.mime_type or "application/octet-stream",
-        filename=doc.nom_original,
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(doc.nom_original, safe='')}"
+        },
     )
 
 

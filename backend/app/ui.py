@@ -201,6 +201,14 @@ def _footer_html(user: User | None) -> str:
 def _page_template(
     title: str, current_path: str, user: User | None, content: str
 ) -> HTMLResponse:
+    demo_banner = ""
+    if settings.DEMO_MODE:
+        demo_banner = (
+            '<div role="note" style="padding:10px 16px;text-align:center;'
+            'background:#fff3bd;color:#463b00;font-size:13px;font-weight:650;'
+            'letter-spacing:.02em">DÉMONSTRATION · Données fictives : ne transmettez '
+            'aucun document réel de candidature.</div>'
+        )
     return HTMLResponse(f"""<!DOCTYPE html>
 <html lang="fr">
   <head>
@@ -442,6 +450,7 @@ def _page_template(
       </div>
     </div>
     {_nav_html(user, current_path)}
+    {demo_banner}
     {content}
     {_footer_html(user)}
     <script>

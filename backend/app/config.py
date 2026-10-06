@@ -20,6 +20,15 @@ class Settings(BaseSettings):
 
     # Racine de stockage des pièces justificatives (chemins relatifs en BDD).
     DOCUMENT_STORAGE_ROOT: str = "./storage"
+    DOCUMENT_STORAGE_BACKEND: str = "filesystem"
+    DOCUMENT_STORAGE_BUCKET: str = "candidate-documents"
+    AWS_ACCESS_KEY_ID: str = ""
+    AWS_SECRET_ACCESS_KEY: str = ""
+    AWS_ENDPOINT_URL_S3: str = ""
+    AWS_REGION: str = "us-east-2"
+
+    # Bandeau explicite pour les déploiements de démonstration.
+    DEMO_MODE: bool = False
 
     # Secret applicatif (usage futur : signature/CSRF). Les sessions
     # actuelles sont des tokens opaques stockés en BDD (voir app/auth.py).

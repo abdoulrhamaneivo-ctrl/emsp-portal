@@ -291,10 +291,9 @@ def dossiers_demo() -> list[dict]:
 
 
 ADMIN_DEMO = {
-    "email": "admin@emsp.ci",
-    "password": "AdminEmsp2026",
+    "email": "admin@demo.emsp.ci",
     "nom": "Scolarité EMSP",
-    "second": "directeur@emsp.ci",
+    "second": "directeur@demo.emsp.ci",
 }
 
 # Les messages de démonstration portent le domaine de démonstration, et
@@ -494,7 +493,7 @@ def executer(mot_de_passe: str, reset: bool) -> int:
                 print(f"  · Compte existant laissé intact : {ADMIN_DEMO[cle]}")
                 continue
             ok, message = creer_admin(
-                ADMIN_DEMO[cle], ADMIN_DEMO["password"], ADMIN_DEMO["nom"]
+                ADMIN_DEMO[cle], mot_de_passe, ADMIN_DEMO["nom"]
             )
             print(f"  · {message}")
 
@@ -520,8 +519,8 @@ def executer(mot_de_passe: str, reset: bool) -> int:
     print(f"  Candidats   : mot de passe « {mot_de_passe} »")
     for item in dossiers_demo():
         print(f"    {item['email']:<26} {item['note'][:60]}")
-    print(f"\n  Admin       : {ADMIN_DEMO['email']} / {ADMIN_DEMO['password']}")
-    print(f"               {ADMIN_DEMO['second']} / {ADMIN_DEMO['password']}")
+    print(f"\n  Admin       : {ADMIN_DEMO['email']} / {mot_de_passe}")
+    print(f"               {ADMIN_DEMO['second']} / {mot_de_passe}")
     print("─" * 68)
     return 0
 

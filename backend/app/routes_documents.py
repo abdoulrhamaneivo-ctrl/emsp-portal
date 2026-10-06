@@ -26,8 +26,9 @@ import mimetypes
 import os
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
+from urllib.parse import quote
 
 from app.auth import get_current_user
 from app.config import settings
@@ -268,23 +269,19 @@ def download_document(
     _require_owned(doc, current_user.numero_dossier)
 
     try:
-        chemin_abs = service._absolute_path(doc.chemin_relatif)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Fichier introuvable sur le serveur."
-        )
-    if not os.path.isfile(chemin_abs):
+        content = service.read_file(doc.chemin_relatif)
+    except (FileNotFoundError, ValueError):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Fichier introuvable sur le serveur."
         )
 
     media_type = doc.mime_type or mimetypes.guess_type(doc.nom_original)[0] or "application/octet-stream"
-    # ``filename`` fait positionner à Starlette :
-    # ``Content-Disposition: attachment; filename="..."``.
-    return FileResponse(
-        chemin_abs,
+    return Response(
+        content=content,
         media_type=media_type,
-        filename=doc.nom_original,
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(doc.nom_original, safe='')}"
+        },
     )
 
 

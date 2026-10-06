@@ -5,36 +5,32 @@ services:
     repo: https://github.com/abdoulrhamaneivo-ctrl/emsp-portal
     branch: main
     region: ohio
-    plan: 0.5c-512mb
+    plan: free
     autoDeployTrigger: commit
-    dockerfilePath: backend/Dockerfile
+    dockerfilePath: Dockerfile
     dockerContext: .
     healthCheckPath: /health
     numInstances: 1
-    disk:
-      name: emsp-documents
-      mountPath: /app/backend/storage
-      sizeGB: 1
     envVars:
       - key: DATABASE_URL
         sync: false
       - key: APP_PUBLIC_URL
         sync: false
-      - key: DOCUMENT_STORAGE_ROOT
-        value: /app/backend/storage
+      - key: DOCUMENT_STORAGE_BACKEND
+        value: s3
+      - key: DOCUMENT_STORAGE_BUCKET
+        value: candidate-documents
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_ENDPOINT_URL_S3
+        sync: false
+      - key: AWS_REGION
+        value: us-east-2
       - key: COOKIE_SECURE
+        value: "true"
+      - key: DEMO_MODE
         value: "true"
       - key: SESSION_EXPIRE_MINUTES
         value: "120"
-      - key: ADMIN_EMAIL
-        sync: false
-      - key: ADMIN_PASSWORD
-        sync: false
-      - key: ADMIN_NOM
-        value: Scolarité EMSP
-      - key: BREVO_API_KEY
-        sync: false
-      - key: BREVO_SENDER_EMAIL
-        sync: false
-      - key: BREVO_SENDER_NAME
-        value: EMSP · Portail candidat

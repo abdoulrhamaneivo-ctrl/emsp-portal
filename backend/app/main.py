@@ -180,10 +180,17 @@ app.include_router(verif_router)  # contrôles de vérification (rôle ADMIN)
 
 
 @app.get("/health", tags=["meta"])
-def health(db: Session = Depends(get_db)):
-    # Render ne doit recevoir le trafic que si l'application peut joindre Neon.
-    db.execute(text("SELECT 1"))
+def health():
+    # Vérification de vie uniquement : ne pas garder Neon actif via les pings
+    # fréquents de Render, afin de rester dans le quota gratuit.
     return {"status": "ok"}
+
+
+@app.get("/ready", tags=["meta"])
+def ready(db: Session = Depends(get_db)):
+    # Contrôle DB explicite, destiné aux opérations et vérifications manuelles.
+    db.execute(text("SELECT 1"))
+    return {"status": "ready", "database": "ok"}
 
 
 @app.get("/", tags=["meta"])

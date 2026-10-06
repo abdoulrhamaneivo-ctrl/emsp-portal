@@ -20,6 +20,8 @@ __pycache__/
 node_modules/
 .venv/
 venv/
+dist/
+.vercel/
 
 # Feuille générée par l'agent de vérification frontend
 frontend/css/verif-repares.css

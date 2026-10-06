@@ -21,8 +21,11 @@ from __future__ import annotations
 import hashlib
 import mimetypes
 import os
+import posixpath
 import re
 import uuid
+
+from app.config import settings
 
 # Types déposables par le candidat (10 pièces officielles).
 TYPES_AUTORISES: tuple[str, ...] = (
@@ -81,9 +84,44 @@ class DocumentStorageService:
     EXECUTABLE_EXT = EXECUTABLE_EXT
 
     def __init__(self, root: str) -> None:
-        # Normalise une fois : toutes les vérifications utilisent realpath.
+        # Le mode local reste pratique en développement. En production, le
+        # bucket privé Neon évite de perdre les pièces au redémarrage de Render.
         self.root = os.path.abspath(root)
-        os.makedirs(self.root, exist_ok=True)
+        self.backend = settings.DOCUMENT_STORAGE_BACKEND.lower()
+        self.s3 = None
+        self.bucket = ""
+        if self.backend == "s3":
+            required = {
+                "AWS_ACCESS_KEY_ID": settings.AWS_ACCESS_KEY_ID,
+                "AWS_SECRET_ACCESS_KEY": settings.AWS_SECRET_ACCESS_KEY,
+                "AWS_ENDPOINT_URL_S3": settings.AWS_ENDPOINT_URL_S3,
+                "DOCUMENT_STORAGE_BUCKET": settings.DOCUMENT_STORAGE_BUCKET,
+            }
+            missing = [key for key, value in required.items() if not value]
+            if missing:
+                raise RuntimeError(
+                    "Configuration Neon Object Storage incomplète : " + ", ".join(missing)
+                )
+
+            # Import paresseux : l'environnement local sans S3 ne dépend pas
+            # du SDK lors de son initialisation.
+            import boto3  # noqa: PLC0415
+            from botocore.config import Config  # noqa: PLC0415
+
+            self.bucket = required["DOCUMENT_STORAGE_BUCKET"] or ""
+            self.s3 = boto3.client(
+                "s3",
+                endpoint_url=required["AWS_ENDPOINT_URL_S3"],
+                region_name=settings.AWS_REGION,
+                aws_access_key_id=required["AWS_ACCESS_KEY_ID"],
+                aws_secret_access_key=required["AWS_SECRET_ACCESS_KEY"],
+                config=Config(s3={"addressing_style": "path"}),
+            )
+        elif self.backend == "filesystem":
+            # Normalise une fois : toutes les vérifications utilisent realpath.
+            os.makedirs(self.root, exist_ok=True)
+        else:
+            raise RuntimeError("DOCUMENT_STORAGE_BACKEND doit être filesystem ou s3.")
 
     # ------------------------------------------------------------------
     # Validation des identifiants
@@ -107,8 +145,29 @@ class DocumentStorageService:
         """Retourne ``<root>/candidats/<numero>`` en créant les parents."""
         numero = self._safe_numero(numero)
         path = os.path.join(self.root, "candidats", numero)
-        os.makedirs(path, exist_ok=True)
+        if self.backend == "filesystem":
+            os.makedirs(path, exist_ok=True)
         return path
+
+    @staticmethod
+    def _safe_object_key(chemin_relatif: str) -> str:
+        """Valide une clé objet relative, sans traversal ni chemin absolu."""
+        if not isinstance(chemin_relatif, str) or not chemin_relatif:
+            raise ValueError("Chemin de fichier invalide.")
+        key = chemin_relatif.replace("\\", "/")
+        normalise = posixpath.normpath(key)
+        morceaux = normalise.split("/")
+        if (
+            key.startswith("/")
+            or normalise != key
+            or len(morceaux) != 4
+            or morceaux[0] != "candidats"
+            or not _NUMERO_RE.fullmatch(morceaux[1])
+            or morceaux[2] not in TYPES_STOCKABLES
+            or not re.fullmatch(r"[0-9a-f]{32}\.(pdf|jpg|jpeg|png)", morceaux[3])
+        ):
+            raise ValueError("Chemin de fichier invalide.")
+        return normalise
 
     def _absolute_path(self, chemin_relatif: str) -> str:
         """Résout un chemin relatif en absolu après contrôle anti-traversal.
@@ -116,6 +175,8 @@ class DocumentStorageService:
         Lève ``ValueError`` si le chemin sort de la racine. Corrige le bug
         du ``startswith`` simple en exigeant le séparateur (``root + os.sep``).
         """
+        if self.backend != "filesystem":
+            raise ValueError("Chemin local indisponible pour le stockage objet.")
         if not chemin_relatif or not isinstance(chemin_relatif, str):
             raise ValueError("Chemin de fichier invalide.")
         if os.path.isabs(chemin_relatif):
@@ -233,15 +294,24 @@ class DocumentStorageService:
         """
         numero = self._safe_numero(numero)
         type_doc = self._safe_type(type_doc)
-        ext, _mime = self.validate_file(original_name, content)
+        ext, mime = self.validate_file(original_name, content)
 
         # Empreinte (traçabilité / déduplication future).
         hashlib.sha256(bytes(content)).hexdigest()
 
+        nom_stockage = f"{uuid.uuid4().hex}{ext}"
+        if self.backend == "s3":
+            chemin_relatif = f"candidats/{numero}/{type_doc}/{nom_stockage}"
+            self.s3.put_object(
+                Bucket=self.bucket,
+                Key=chemin_relatif,
+                Body=bytes(content),
+                ContentType=mime,
+            )
+            return nom_stockage, chemin_relatif
+
         dossier_type = os.path.join(self.candidate_dir(numero), type_doc)
         os.makedirs(dossier_type, exist_ok=True)
-
-        nom_stockage = f"{uuid.uuid4().hex}{ext}"
         chemin_abs = os.path.join(dossier_type, nom_stockage)
         tmp_abs = chemin_abs + f".tmp.{uuid.uuid4().hex}"
 
@@ -295,6 +365,11 @@ class DocumentStorageService:
         Raises:
             ValueError: si le chemin sort de la racine (traversal).
         """
+        if self.backend == "s3":
+            key = self._safe_object_key(chemin_relatif)
+            self.s3.delete_object(Bucket=self.bucket, Key=key)
+            return True
+
         cible = self._absolute_path(chemin_relatif)
         try:
             if not os.path.lexists(cible):
@@ -305,6 +380,46 @@ class DocumentStorageService:
             return True
         except FileNotFoundError:
             return False
+
+    def read_file(self, chemin_relatif: str) -> bytes:
+        """Lit une pièce locale ou distante après validation de son chemin."""
+        if self.backend == "s3":
+            key = self._safe_object_key(chemin_relatif)
+            from botocore.exceptions import ClientError  # noqa: PLC0415
+
+            try:
+                result = self.s3.get_object(Bucket=self.bucket, Key=key)
+            except ClientError as exc:
+                code = str(exc.response.get("Error", {}).get("Code", ""))
+                if code in {"404", "NoSuchKey", "NotFound"}:
+                    raise FileNotFoundError(key) from exc
+                raise
+            body = result["Body"]
+            try:
+                return body.read()
+            finally:
+                body.close()
+
+        cible = self._absolute_path(chemin_relatif)
+        with open(cible, "rb") as fichier:
+            return fichier.read()
+
+    def file_exists(self, chemin_relatif: str) -> bool:
+        """Vérifie une pièce sans rendre une clé objet publique."""
+        if self.backend == "s3":
+            key = self._safe_object_key(chemin_relatif)
+            from botocore.exceptions import ClientError  # noqa: PLC0415
+
+            try:
+                self.s3.head_object(Bucket=self.bucket, Key=key)
+                return True
+            except ClientError as exc:
+                code = str(exc.response.get("Error", {}).get("Code", ""))
+                if code in {"404", "NoSuchKey", "NotFound"}:
+                    return False
+                raise
+        cible = self._absolute_path(chemin_relatif)
+        return os.path.isfile(cible)
 
     # ------------------------------------------------------------------
     # Réconciliation FS <-> BDD
@@ -338,18 +453,26 @@ class DocumentStorageService:
             if isinstance(rel, str) and rel:
                 chemins_db.add(rel)
 
-        root_real = os.path.realpath(self.root)
-        base = os.path.join(root_real, "candidats")
         fichiers_fs: set[str] = set()
-        if os.path.isdir(base):
-            for dirpath, _dirnames, filenames in os.walk(base):
-                for nom in filenames:
-                    # Ignore les restes d'écritures atomiques interrompues.
-                    if ".tmp." in nom:
-                        continue
-                    abs_f = os.path.join(dirpath, nom)
-                    rel_f = os.path.relpath(abs_f, root_real)
-                    fichiers_fs.add(rel_f)
+        if self.backend == "s3":
+            paginator = self.s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=self.bucket, Prefix="candidats/"):
+                for item in page.get("Contents", []):
+                    key = item.get("Key", "")
+                    if key and ".tmp." not in key:
+                        fichiers_fs.add(key)
+        else:
+            root_real = os.path.realpath(self.root)
+            base = os.path.join(root_real, "candidats")
+            if os.path.isdir(base):
+                for dirpath, _dirnames, filenames in os.walk(base):
+                    for nom in filenames:
+                        # Ignore les restes d'écritures atomiques interrompues.
+                        if ".tmp." in nom:
+                            continue
+                        abs_f = os.path.join(dirpath, nom)
+                        rel_f = os.path.relpath(abs_f, root_real)
+                        fichiers_fs.add(rel_f)
 
         files_sans_db = sorted(fichiers_fs - chemins_db)
 
@@ -360,12 +483,12 @@ class DocumentStorageService:
                 metadata_sans_fichier.append(row)
                 continue
             try:
-                abs_f = self._absolute_path(rel)
-            except ValueError:
+                exists = self.file_exists(rel)
+            except (ValueError, FileNotFoundError):
                 # Chemin traversal en BDD : traité comme manquant/suspect.
                 metadata_sans_fichier.append(row)
                 continue
-            if not os.path.isfile(abs_f):
+            if not exists:
                 metadata_sans_fichier.append(row)
 
         return files_sans_db, metadata_sans_fichier
