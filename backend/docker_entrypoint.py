@@ -20,6 +20,9 @@ def main() -> None:
     os.setgroups(os.getgrouplist(user.pw_name, user.pw_gid))
     os.setgid(user.pw_gid)
     os.setuid(user.pw_uid)
+    # os.setuid() does not change HOME. Keep libpq (and other clients) from
+    # looking for TLS credentials under /root after privilege dropping.
+    os.environ["HOME"] = user.pw_dir
 
     port = os.environ.get("PORT", "10000")
     os.execvp(
