@@ -31,3 +31,5 @@ frontend/css/*.bak
 .neon
 .DS_Store
 frontend/a1-pharmacy-1.0.0/
+.vercel
+.env*

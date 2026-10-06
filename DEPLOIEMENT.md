@@ -80,6 +80,8 @@ vercel deploy --prod
 
 Associer le dépôt privé GitHub au projet Vercel pour activer les futurs déploiements. Conserver `dist` comme répertoire de sortie et `sh scripts/build-vercel-static.sh` comme commande de build. Le fichier `vercel.json` contient les rewrites Render ainsi que les règles de cache des ressources statiques. Aucun secret Neon, Render ou Brevo n’est nécessaire dans Vercel.
 
+Si un déploiement Git est bloqué parce que Vercel ne reconnaît pas l’auteur du commit, configurer localement `git config user.email` avec l’adresse vérifiée du compte GitHub relié au projet Vercel, puis pousser un nouveau commit.
+
 Après publication, copier l’URL HTTPS Vercel dans `APP_PUBLIC_URL` sur Render, redéployer puis vérifier `/`, `/connexion.html`, `/api`, les photos et les fichiers statiques. Vercel Hobby ayant des conditions d’usage spécifiques, ne pas utiliser cette configuration gratuite comme portail officiel sans confirmer que l’usage non commercial de l’école est admissible.
 
 ## Vérification de démonstration
