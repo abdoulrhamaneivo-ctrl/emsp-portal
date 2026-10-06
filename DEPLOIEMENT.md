@@ -25,7 +25,7 @@ frontal seulement si le domaine ou une exigence d’architecture le justifie.
 
 | Phase | Action | Critère de passage |
 |---|---|---|
-| 0 · Versionner | Créer un dépôt Git privé, contrôler les fichiers ignorés et pousser le code. | `.env`, bases locales et fichiers `storage/` ne sont pas dans Git. |
+| 0 · Versionner | Dépôt privé `abdoulrhamaneivo-ctrl/emsp-portal`, branche `main`. | Dépôt poussé ; `.env`, bases locales et pièces `storage/` ignorés. |
 | 1 · Base | Créer Neon dans une région proche de Render et une branche de production. | `DATABASE_URL` est dans le gestionnaire de secrets, jamais dans le dépôt. |
 | 2 · Préproduction | Créer le Web Service Render depuis une branche de test et relier Neon. | Le build Docker réussit et `/health` répond `200`. |
 | 3 · Données durables | Monter le disque Render sur `/app/backend/storage`; essayer dépôt et téléchargement après redémarrage. | Les pièces et données de test sont conservées. |
@@ -41,9 +41,10 @@ interruption. Si une courte coupure à chaque déploiement ou une instance uniqu
 convient pas, migrer d’abord `DocumentStorageService` vers un stockage objet partagé.
 Vérifier les tarifs et quotas actuels avant de choisir les offres.
 
-**État du dossier au 6 octobre 2026 :** il n’y a pas de dépôt Git ni de dépôt distant
-configuré dans ce workspace. La phase 0 est nécessaire avant de relier ce code à
-Render ou Vercel.
+**État au 7 octobre 2026 :** le dépôt privé GitHub est relié à `origin`, sa branche
+`main` est publiée, et le CLI Render est authentifié sur `My Workspace`. Le fichier
+`render.yaml` décrit le service à créer. Sa création démarre un plan payant et
+demande les secrets dans Render.
 
 ## 1. Préparer Neon
 
@@ -74,7 +75,8 @@ est disponible si le nombre de connexions concurrentes le justifie.
 
 ## 2. Déployer l’application sur Render
 
-Créer un **Web Service** depuis le dépôt Git. Utiliser ces réglages :
+Le dépôt contient maintenant le Blueprint [`render.yaml`](render.yaml). Une fois
+créé dans Render, le service utilisera ces réglages :
 
 | Réglage Render | Valeur |
 |---|---|
@@ -83,7 +85,9 @@ Créer un **Web Service** depuis le dépôt Git. Utiliser ces réglages :
 | Docker build context | Racine du dépôt (`.`) : le Dockerfile copie `backend/`, `frontend/` et `Photos/` |
 | Health check path | `/health` |
 | Port | Laisser Render fournir `PORT` (par défaut `10000`) |
-| Auto-deploy | Branche de production choisie pour le dépôt |
+| Région | Ohio, proche de l’endpoint Neon `us-east-2` |
+| Compute | `0.5c-512mb` : 512 Mo RAM, plan payant |
+| Auto-deploy | Chaque commit sur `main` |
 
 Le Dockerfile écoute sur `0.0.0.0:$PORT`. Le build context doit rester la racine,
 car le Dockerfile copie `backend/` et `frontend/`. Le `.dockerignore` exclut les
@@ -101,6 +105,11 @@ redémarrage ou déploiement. Les disques Render nécessitent un service payant,
 empêchent de monter plusieurs instances avec ce même disque et désactivent les
 déploiements sans interruption : prévoir une courte indisponibilité à chaque
 déploiement.
+
+Le Blueprint commence avec un disque de 1 Go. Au tarif Render affiché le
+7 octobre 2026, `0.5c-512mb` coûte 7 USD/mois et un disque de 1 Go coûte
+0,25 USD/mois, soit environ 7,25 USD/mois hors trafic et taxes. Render autorise
+l’agrandissement du disque, mais pas sa réduction.
 
 Pour plusieurs instances ou une architecture sans disque, remplacer d’abord le
 stockage `DocumentStorageService` par un stockage objet partagé, puis migrer les

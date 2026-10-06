@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: emsp-portal
+    runtime: docker
+    repo: https://github.com/abdoulrhamaneivo-ctrl/emsp-portal
+    branch: main
+    region: ohio
+    plan: 0.5c-512mb
+    autoDeployTrigger: commit
+    dockerfilePath: backend/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    numInstances: 1
+    disk:
+      name: emsp-documents
+      mountPath: /app/backend/storage
+      sizeGB: 1
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: APP_PUBLIC_URL
+        sync: false
+      - key: DOCUMENT_STORAGE_ROOT
+        value: /app/backend/storage
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: SESSION_EXPIRE_MINUTES
+        value: "120"
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: ADMIN_NOM
+        value: Scolarité EMSP
+      - key: BREVO_API_KEY
+        sync: false
+      - key: BREVO_SENDER_EMAIL
+        sync: false
+      - key: BREVO_SENDER_NAME
+        value: EMSP · Portail candidat
