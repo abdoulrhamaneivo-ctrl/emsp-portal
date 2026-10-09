@@ -7,19 +7,19 @@ Ownership strict via current_user (User.numero_dossier -> Candidature).
 
 from __future__ import annotations
 
-import os
 import re
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_user
-from app.config import settings
 from app.db import get_db
 from app.models import Candidature, DocumentCandidature, MessageContact, User
 from app.pdf_documents import build_convocation_pdf, build_result_certificate_pdf
 from app.rate_limit import check_rate_limit
+from app.routes_documents import get_storage_service
 
 router = APIRouter(tags=["convocation-admission-contact"])
 
@@ -60,16 +60,6 @@ def _get_convocation_doc(db: Session, numero_dossier: str) -> DocumentCandidatur
         )
         .first()
     )
-
-
-def _resolve_storage_path(chemin_relatif: str) -> str:
-    """Resout chemin_relatif contre DOCUMENT_STORAGE_ROOT, anti path-traversal."""
-    root = os.path.abspath(settings.DOCUMENT_STORAGE_ROOT)
-    # chemin_relatif reste relatif en BDD ; abspath(join) + garde-fou.
-    candidat = os.path.abspath(os.path.join(root, chemin_relatif))
-    if candidat != root and not candidat.startswith(root + os.sep):
-        raise HTTPException(status_code=404, detail=CONVOCATION_INDISPONIBLE)
-    return candidat
 
 
 def _masquer_numero_dossier(numero: str | None) -> str:
@@ -124,14 +114,19 @@ def download_convocation(
 
     # Ownership strict : on ne cherche que parmi les documents du dossier du user.
     doc = _get_convocation_doc(db, candidature.numero_dossier)
-    if doc is not None:
-        path = _resolve_storage_path(doc.chemin_relatif)
-        if os.path.isfile(path):
-            return FileResponse(
-                path=path,
-                media_type=doc.mime_type or "application/octet-stream",
-                filename=doc.nom_original or "convocation.pdf",
+    is_demo = str(candidature.email or "").lower().endswith("@demo.emsp.ci")
+    if doc is not None and not is_demo:
+        try:
+            content = get_storage_service().read_file(doc.chemin_relatif)
+            return Response(
+                content=content,
+                media_type=doc.mime_type or "application/pdf",
+                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(doc.nom_original or 'convocation.pdf', safe='')}"},
             )
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="La convocation est momentanément inaccessible. Réessayez plus tard.") from exc
 
     pdf = build_convocation_pdf(candidature)
     return Response(
@@ -154,11 +149,16 @@ def get_admission(
     candidature = _get_candidature(db, current_user)
     if candidature is None or candidature.admis_concours is None:
         return {"disponible": False, "message": ADMISSION_INDISPONIBLE}
+    identite = " ".join(
+        value.strip() for value in (candidature.prenoms or "", candidature.nom or "") if value.strip()
+    )
     if candidature.admis_concours is True:
         return {
             "disponible": True,
             "admis": True,
-            "message": "Félicitations, vous êtes admis.",
+            "message": f"Félicitations {identite}, vous êtes admis." if identite else "Félicitations, vous êtes admis.",
+            "prenoms": candidature.prenoms,
+            "nom": candidature.nom,
             "numero_dossier": candidature.numero_dossier,
             "filiere_formation": candidature.filiere_formation,
             "date_decision": candidature.reviewed_at.isoformat() if candidature.reviewed_at else None,
@@ -168,7 +168,9 @@ def get_admission(
     return {
         "disponible": True,
         "admis": False,
-        "message": "Dossier non retenu.",
+        "message": f"{identite}, votre dossier n’a pas été retenu." if identite else "Votre dossier n’a pas été retenu.",
+        "prenoms": candidature.prenoms,
+        "nom": candidature.nom,
         "numero_dossier": candidature.numero_dossier,
         "date_decision": candidature.reviewed_at.isoformat() if candidature.reviewed_at else None,
         "notes": _notes_resultat(candidature),

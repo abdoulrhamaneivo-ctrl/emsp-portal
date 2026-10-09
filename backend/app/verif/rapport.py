@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models import ActionAdmin, Candidature, Controle, DocumentCandidature
 from app.verif.forensics import Contexte, Constat, analyser
+from app.verif.modele import configuration_modele
 
 # Gravité retenue pour l'affichage en tête de rapport.
 _ORDRE = {"majeur": 0, "mineur": 1, "info": 2}
@@ -27,6 +28,7 @@ LIBELLES_CONTROLE = {
     "origine_fichier": "Origine du fichier",
     "coherence_notes": "Cohérence des notes",
     "coherence_temps": "Cohérence des dates",
+    "lecture_piece_ia": "Lecture assistée par IA",
 }
 
 
@@ -124,20 +126,38 @@ def lancer_controles(db: Session, candidature: Candidature) -> list[Controle]:
 
 def resume(db: Session, candidature: Candidature) -> dict:
     """Rapport de vérification, prêt pour l'affichage dans la fiche dossier."""
-    constats = constats_de(db, candidature)
+    lignes = constats_de(db, candidature)
+    etats_modele = [c for c in lignes if c.controle == "etat_lecture_modele"]
+    constats = [c for c in lignes if c.controle != "etat_lecture_modele"]
+    dernier_etat = _details(etats_modele[0].details) if etats_modele else {}
     signalements = [c for c in constats if c.statut == "signalement"]
     par_gravite: dict[str, int] = {}
     for c in signalements:
         par_gravite[c.gravite] = par_gravite.get(c.gravite, 0) + 1
 
+    if dernier_etat:
+        lecture_modele = dernier_etat.get("etat", "a_lancer")
+        lecture_modele_message = dernier_etat.get("message", "")
+    elif configuration_modele()[0] != "prete":
+        lecture_modele, lecture_modele_message = configuration_modele()
+    elif not (candidature.consentement_tiers and candidature.consentement_le):
+        lecture_modele = "consentement_requis"
+        lecture_modele_message = "Le candidat n’a pas donné son accord. Aucune pièce n’est transmise au fournisseur IA."
+    else:
+        lecture_modele = "a_lancer"
+        lecture_modele_message = "Le modèle est prêt. Lancez les contrôles pour lire les pièces autorisées."
+
+    sources = {c.source for c in constats}
+    source_rapport = "deterministe+modele" if any(s.startswith("modele:") for s in sources) else "deterministe"
+
     return {
-        "analyse": bool(constats),
-        "source": "deterministe",
-        # La lecture par modèle n'existe pas encore : le rapport doit le
-        # dire plutôt que laisser croire que le dossier a été analysé.
-        "lecture_modele": "non_configuree" if not settings.VERIF_ACTIF else "non_lancee",
+        # Un contrôle sans signalement est bien une analyse effectuée.
+        "analyse": bool(constats or etats_modele),
+        "source": source_rapport,
+        "lecture_modele": lecture_modele,
+        "lecture_modele_message": lecture_modele_message,
         "consentement": {
-            "accorde": bool(candidature.consentement_tiers),
+            "accorde": bool(candidature.consentement_tiers and candidature.consentement_le),
             "le": candidature.consentement_le.isoformat() if candidature.consentement_le else None,
             "exige": settings.CONSENTEMENT_TIERS_REQUIS,
         },

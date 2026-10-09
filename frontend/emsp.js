@@ -1,6 +1,39 @@
 (() => {
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+  const enhancePasswordFields = (root = document) => {
+    $$('input[type="password"]:not([data-password-enhanced])', root).forEach((input, index) => {
+      input.dataset.passwordEnhanced = "true";
+      if (!input.id) input.id = `password-field-${index + 1}`;
+      const wrapper = document.createElement("span");
+      wrapper.className = "password-input-wrap";
+      input.parentNode.insertBefore(wrapper, input);
+      wrapper.append(input);
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "password-reveal-toggle";
+      toggle.dataset.passwordToggle = "";
+      toggle.setAttribute("aria-controls", input.id);
+      toggle.setAttribute("aria-label", "Afficher le mot de passe");
+      toggle.title = "Afficher le mot de passe";
+      toggle.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.3-6 9.5-6 9.5 6 9.5 6-3.3 6-9.5 6-9.5-6-9.5-6Z"></path><circle cx="12" cy="12" r="2.5"></circle></svg><span>Afficher</span>';
+      wrapper.append(toggle);
+    });
+  };
+  enhancePasswordFields();
+  document.addEventListener("click", (event) => {
+    const toggle = event.target.closest("[data-password-toggle]");
+    if (!toggle) return;
+    const input = document.getElementById(toggle.getAttribute("aria-controls"));
+    if (!input) return;
+    const reveal = input.type === "password";
+    input.type = reveal ? "text" : "password";
+    toggle.classList.toggle("is-visible", reveal);
+    toggle.setAttribute("aria-label", reveal ? "Masquer le mot de passe" : "Afficher le mot de passe");
+    toggle.title = reveal ? "Masquer le mot de passe" : "Afficher le mot de passe";
+    $("span", toggle).textContent = reveal ? "Masquer" : "Afficher";
+    input.focus({ preventScroll: true });
+  });
   const navigateTo = (url) => window.emspNavigate ? window.emspNavigate(url) : window.location.assign(url);
   const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
   const messageOf = (detail) => typeof detail === "string" ? detail : detail && typeof detail === "object" ? Object.values(detail).join(" · ") : "Une erreur est survenue. Réessayez.";
@@ -559,7 +592,38 @@
     $(`[data-profile-role]`, profile).textContent = me.role === "ADMIN" ? "Administration" : "Candidat";
     if (me.numero_dossier) $(`[data-profile-dossier]`, profile).textContent = me.numero_dossier; else $(`[data-profile-dossier-row]`, profile).hidden = true;
     $(`[data-profile-initials]`, profile).textContent = display.split(/\s+/).slice(0, 2).map((s) => s[0]).join("").toUpperCase();
+    const consentPanel = $(`[data-profile-ai-consent]`, profile);
+    if (me.role !== "ADMIN" && consentPanel && app) {
+      consentPanel.hidden = false;
+      try {
+        const consent = await api("/api/candidature/consentement-ia");
+        $(`[data-ai-consent-toggle]`, consentPanel).checked = consent.accorde;
+      } catch (error) {
+        showFeedback($(`[data-ai-consent-feedback]`, consentPanel), error.message, "error");
+      }
+    }
   }).catch((error) => showFeedback($("[data-profile-feedback]", profile), error.message, "error"));
+
+  const aiConsentPanel = $(`[data-profile-ai-consent]`);
+  const aiConsentToggle = $(`[data-ai-consent-toggle]`, aiConsentPanel || document);
+  aiConsentToggle?.addEventListener("change", async () => {
+    const feedback = $(`[data-ai-consent-feedback]`, aiConsentPanel);
+    const accepted = aiConsentToggle.checked;
+    aiConsentToggle.disabled = true;
+    hideFeedback(feedback);
+    try {
+      const result = await api("/api/candidature/consentement-ia", {
+        method: "PUT",
+        body: JSON.stringify({ consentement: accepted }),
+      });
+      showFeedback(feedback, accepted
+        ? "Accord enregistré. L’administration pourra lancer une lecture assistée des pièces."
+        : "Accord retiré. Aucune nouvelle pièce ne sera envoyée au fournisseur IA.", "success");
+    } catch (error) {
+      aiConsentToggle.checked = !accepted;
+      showFeedback(feedback, error.message, "error");
+    } finally { aiConsentToggle.disabled = false; }
+  });
 
   const passwordChangeForm = $("[data-password-change]");
   passwordChangeForm?.addEventListener("submit", async (event) => {
@@ -641,6 +705,24 @@
     let offset = 0, limit = 50, selectedDossier = null;
     const feedback = $(`[data-admin-feedback]`, admin);
     const statusLabels = { DRAFT: "Brouillon", SUBMITTED: "Dossier soumis", UNDER_REVIEW: "En cours d’examen", VALIDATED: "Dossier validé", RETAINED: "Dossier retenu", REJECTED: "Non retenu", COMPOSITION_SCHEDULED: "Composition programmée", ADMITTED: "Admis" };
+    function renderVerification(report, panel) {
+      const target = $(`[data-verification-report]`, panel);
+      const modelStates = {
+        terminee: "Analyse IA terminée",
+        partielle: "Analyse IA partielle",
+        erreur: "Le fournisseur IA a rencontré une erreur",
+        sans_piece: "Aucune pièce à analyser",
+        consentement_requis: "Accord du candidat requis",
+        non_configuree: "Variables IA manquantes dans Render",
+        desactivee: "Analyse IA désactivée",
+        url_invalide: "URL IA non sécurisée",
+        a_lancer: "Modèle prêt à lancer",
+      };
+      const statuses = { signalement: "À examiner", indeterminate: "À vérifier manuellement", conforme: "Aucune incohérence apparente" };
+      const findings = report?.constats || [];
+      const message = report?.lecture_modele_message || "";
+      target.innerHTML = `<div class="verification-status-grid"><article><span>Contrôles déterministes</span><strong>${report?.analyse ? "Effectués" : "Pas encore lancés"}</strong><small>${Number(report?.resume?.signalements || 0)} signalement(s) · ${Number(report?.resume?.indetermines || 0)} point(s) indéterminé(s)</small></article><article><span>Lecture par modèle IA</span><strong>${escapeHtml(modelStates[report?.lecture_modele] || "En attente")}</strong><small>${escapeHtml(message)}</small></article></div>${findings.length ? `<ul class="verification-findings">${findings.map((item) => `<li><div><strong>${escapeHtml(item.libelle || item.controle || "Constat")}</strong>${item.type_document ? `<small>${escapeHtml(item.type_document)}</small>` : ""}</div><span class="verification-finding-status is-${escapeHtml(item.statut)}">${escapeHtml(statuses[item.statut] || item.statut)}</span><p>${escapeHtml(item.message)}</p></li>`).join("")}</ul>` : `<p class="verification-empty">${report?.analyse ? "Aucun écart signalé par les contrôles effectués." : "Aucun contrôle n’a encore été lancé sur ce dossier."}</p>`}<p class="verification-consent ${report?.consentement?.accorde ? "is-accepted" : "is-missing"}"><strong>Accord pour l’IA :</strong> ${report?.consentement?.accorde ? `donné le ${escapeHtml(dateFr(report.consentement.le, { dateStyle: "medium" }))}` : "non donné. Les pièces ne sont pas envoyées au fournisseur."}</p>`;
+    }
     async function loadOverview() {
       const [data, me] = await Promise.all([api("/api/admin/overview"), api("/api/me")]);
       $(`[data-admin-total]`, admin).textContent = data.dossiers_total; $(`[data-admin-submitted]`, admin).textContent = data.dossiers_soumis;
@@ -665,7 +747,13 @@
       const panel = $(`[data-admin-detail]`, admin); panel.hidden = false; $(`[data-detail-title]`, panel).textContent = `${d.numero_dossier} · ${d.prenoms || ""} ${d.nom || ""}`;
       $(`[data-detail-summary]`, panel).innerHTML = [["Identité", `${d.prenoms || ""} ${d.nom || ""}`, d.email, d.telephone, d.date_naissance, d.lieu_naissance, d.nationalite, d.nature_piece, d.numero_piece, d.adresse], ["Baccalauréat", d.annee_bac, d.serie_bac, d.numero_bac, d.numero_table, d.mention, d.moyenne_bac], ["Choix", d.choix_1_filiere, d.choix_2_filiere], ["Tuteur principal", d.tuteur1?.nom, d.tuteur1?.contact, d.tuteur1?.lien, d.tuteur1?.residence], ["Second tuteur", d.tuteur2?.nom, d.tuteur2?.contact, d.tuteur2?.lien, d.tuteur2?.residence]].map(([title, ...values]) => `<section><h3>${escapeHtml(title)}</h3><p>${values.filter(Boolean).map(escapeHtml).join(" · ") || "—"}</p></section>`).join("");
       $(`[data-detail-documents]`, panel).innerHTML = `<h3>Pièces déposées (${result.documents.length}/10)</h3><ul>${result.documents.map((doc) => `<li><a href="${escapeHtml(doc.url)}">${escapeHtml(doc.nom_original || doc.type_document)} ↓</a><small>${escapeHtml(doc.type_document)} · ${dateFr(doc.depose_le, { dateStyle: "medium" })}</small></li>`).join("") || "<li>Aucune pièce déposée.</li>"}</ul>`;
-      const verif = result.verification; $(`[data-detail-verification]`, panel).innerHTML = `<h3>Contrôles de cohérence</h3><pre>${escapeHtml(typeof verif === "string" ? verif : JSON.stringify(verif, null, 2))}</pre>`;
+      renderVerification(result.verification, panel);
+      const convocationDownload = $(`[data-admin-convocation-download]`, panel);
+      convocationDownload.hidden = !d.date_compo || !d.centre_compo;
+      convocationDownload.href = `/api/admin/candidatures/${encodeURIComponent(numero)}/convocation.pdf`;
+      const resultDownload = $(`[data-admin-result-download]`, panel);
+      resultDownload.hidden = d.admis_concours === null || d.admis_concours === undefined;
+      resultDownload.href = `/api/admin/candidatures/${encodeURIComponent(numero)}/resultat.pdf`;
       const decision = $(`[data-decision-form]`, panel); decision.elements.statut.value = d.statut || "SUBMITTED"; decision.elements.filiere_formation.value = d.filiere_formation || ""; decision.elements.date_compo.value = d.date_compo || ""; decision.elements.heure_compo.value = d.heure_compo || ""; decision.elements.centre_compo.value = d.centre_compo || ""; decision.elements.note_interne.value = d.note_interne || ""; decision.elements.note_francais_compo.value = d.notes_compo?.francais ?? ""; decision.elements.note_math_compo.value = d.notes_compo?.math ?? ""; decision.elements.note_anglais_compo.value = d.notes_compo?.anglais ?? ""; decision.elements.note_psycho_compo.value = d.notes_compo?.psycho ?? ""; decision.elements.motif_refus.value = d.motif_refus || "";
       panel.scrollIntoView({ behavior: "smooth", block: "start" });
     }
@@ -699,6 +787,27 @@
       if (event.target.closest("[data-page-back]")) { offset = Math.max(0, offset - limit); loadApplications().catch((error) => showFeedback(feedback, error.message, "error")); }
       if (event.target.closest("[data-page-next]")) { offset += limit; loadApplications().catch((error) => showFeedback(feedback, error.message, "error")); }
       if (event.target.closest("[data-detail-close]")) $(`[data-admin-detail]`, admin).hidden = true;
+    });
+    $(`[data-run-verification]`, admin)?.addEventListener("click", async (event) => {
+      if (!selectedDossier) return;
+      const button = event.currentTarget;
+      const panel = $(`[data-admin-detail]`, admin);
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+      button.textContent = "Analyse en cours…";
+      hideFeedback(feedback);
+      try {
+        const report = await api(`/api/admin/candidatures/${encodeURIComponent(selectedDossier)}/controles`, { method: "POST" });
+        renderVerification(report, panel);
+        button.textContent = "Relancer les contrôles";
+        showFeedback(feedback, "Le rapport de contrôle a été actualisé.", "success");
+      } catch (error) {
+        showFeedback(feedback, error.message, "error");
+        button.textContent = "Réessayer les contrôles";
+      } finally {
+        button.disabled = false;
+        button.removeAttribute("aria-busy");
+      }
     });
     $(`[data-decision-form]`, admin)?.addEventListener("submit", async (event) => {
       event.preventDefault(); if (!selectedDossier) return;

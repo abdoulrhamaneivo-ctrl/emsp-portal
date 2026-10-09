@@ -19,6 +19,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, StrictBool
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -457,6 +458,42 @@ def get_ma_candidature(
     """Retourne la candidature de l'utilisateur connecté."""
     candidature = _get_candidature_or_404(db, current_user)
     return _build_out(candidature)
+
+
+class ConsentementIADemande(BaseModel):
+    consentement: StrictBool
+
+
+@router.get("/consentement-ia")
+def lire_consentement_ia(
+    db: Session = Depends(get_db),
+    current_user: Any = Depends(get_current_user),
+):
+    """Retourne le choix de partage des pièces du candidat connecté."""
+    candidature = _get_candidature_or_404(db, current_user)
+    return {
+        "accorde": bool(candidature.consentement_tiers and candidature.consentement_le),
+        "le": candidature.consentement_le.isoformat() if candidature.consentement_le else None,
+    }
+
+
+@router.put("/consentement-ia")
+def modifier_consentement_ia(
+    body: ConsentementIADemande,
+    db: Session = Depends(get_db),
+    current_user: Any = Depends(get_current_user),
+):
+    """Permet au candidat de donner ou retirer son accord, même après envoi."""
+    candidature = _get_candidature_or_404(db, current_user)
+    candidature.consentement_tiers = body.consentement
+    candidature.consentement_le = _now() if body.consentement else None
+    db.add(candidature)
+    db.commit()
+    return {
+        "accorde": candidature.consentement_tiers,
+        "le": candidature.consentement_le.isoformat() if candidature.consentement_le else None,
+        "message": "Votre choix est enregistré.",
+    }
 
 
 @router.patch("", response_model=CandidatureOut)

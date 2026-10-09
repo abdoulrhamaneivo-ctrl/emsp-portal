@@ -325,6 +325,38 @@ def test_documents_upload_validation_idor(client):
         client_b.close()
 
 
+def test_piece_de_demo_manquante_est_reconstruite_et_restockee(client):
+    """Un objet de démo absent du stockage reste téléchargeable et se répare."""
+    register(client, email="aya@demo.emsp.ci")
+    upload = client.post(
+        "/api/candidature/documents",
+        data={"type_document": "attestation_bac"},
+        files={"file": ("attestation.pdf", FAUX_PDF, "application/pdf")},
+    )
+    assert upload.status_code == 201, upload.text
+    document_id = upload.json()["id"]
+
+    service = app.dependency_overrides[get_storage_service]()
+    # Le chemin n'est volontairement pas exposé par l'API : vider le stockage
+    # temporaire reproduit un objet Neon/S3 absent, tout en gardant la BDD.
+    from pathlib import Path
+
+    dossier_stockage = Path(service.root) / "candidats"
+    for objet in dossier_stockage.rglob("*.pdf"):
+        service.delete_file(objet.relative_to(service.root).as_posix())
+
+    response = client.get(f"/api/candidature/documents/{document_id}/download")
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("application/pdf")
+    assert b"FICTIF" in response.content
+    assert b"Aya Marie" in response.content
+    assert b"Kouassi" in response.content
+    # La clé réparée doit exister, donc une seconde lecture repasse au stockage.
+    second = client.get(f"/api/candidature/documents/{document_id}/download")
+    assert second.status_code == 200, second.text
+    assert second.content == response.content
+
+
 # ---------------------------------------------------------------------------
 # Contact, convocation, admission
 # ---------------------------------------------------------------------------
@@ -721,9 +753,37 @@ def test_admin_decide_et_le_candidat_voit_le_statut(client, tmp_path):
     convocation = client.get("/api/candidature/convocation")
     assert convocation.json()["disponible"] is True
     assert convocation.json()["centre_compo"] == "Campus 1, Abidjan"
+    convocation_pdf = client.get("/api/candidature/convocation/download")
+    assert convocation_pdf.status_code == 200, convocation_pdf.text
+    assert convocation_pdf.headers["content-type"].startswith("application/pdf")
+    assert b"Aya Marie" in convocation_pdf.content
+    assert b"Kouassi" in convocation_pdf.content
+    assert b"Campus 1" in convocation_pdf.content
+    assert b"Abidjan" in convocation_pdf.content
+    assert b"\xff\xd8\xff" in convocation_pdf.content  # logo EMSP intégré
     # Le candidat ne doit pas pouvoir lire les champs d'administration
     corps = client.get("/api/candidature").text
     assert "note_interne" not in corps
+
+    # Publication du jury puis vérification du message et du PDF personnalisés.
+    client.post("/api/auth/logout")
+    client.post("/api/auth/login", json={"email": "scolarite@emsp.ci", "password": "adminmotdepasse1"})
+    decision = client.post(
+        "/api/admin/candidatures/CDT_0001/statut",
+        json={"statut": "ADMITTED", "commentaire": "Décision de test"},
+    )
+    assert decision.status_code == 200, decision.text
+    client.post("/api/auth/logout")
+    client.post("/api/auth/login", json={"email": "candidat2@example.com", "password": "motdepasse123"})
+    admission = client.get("/api/candidature/admission")
+    assert admission.status_code == 200, admission.text
+    assert admission.json()["disponible"] is True
+    assert "Aya Marie Kouassi" in admission.json()["message"]
+    certificat = client.get("/api/candidature/admission/certificat.pdf")
+    assert certificat.status_code == 200, certificat.text
+    assert b"Aya Marie" in certificat.content
+    assert b"Kouassi" in certificat.content
+    assert b"\xff\xd8\xff" in certificat.content
 
 
 def test_admin_statut_inconnu_refuse(client, tmp_path):

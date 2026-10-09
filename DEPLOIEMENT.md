@@ -50,6 +50,34 @@ Render doit recevoir les variables suivantes dans **Environment** :
 | `COOKIE_SECURE` | `true` |
 | `DEMO_MODE` | `true` |
 
+Les courriels et l’IA sont facultatifs. Les clés restent exclusivement dans **Render → Environment** ; Vercel n’a besoin d’aucun secret.
+
+### IA — lecture assistée des pièces
+
+Pour activer le bouton de contrôle IA dans une fiche dossier, configurez ces variables sur Render avec un fournisseur compatible avec l’API OpenAI Chat Completions :
+
+| Variable | Valeur |
+|---|---|
+| `VERIF_ACTIF` | `true` |
+| `VERIF_BASE_URL` | URL HTTPS de l’API, par exemple l’endpoint `/v1` du fournisseur |
+| `VERIF_CLE_API` | clé API du fournisseur |
+| `VERIF_MODELE` | identifiant d’un modèle compatible vision pour JPG/PNG |
+| `VERIF_PIECES_MAX` | `3` par défaut ; maximum 10 |
+| `VERIF_TIMEOUT_SEC` | `60` par défaut |
+
+L’analyse des PDF textuels extrait leur texte sur Render ; les images JPG/PNG sont envoyées au modèle vision. Sans les variables ou sans accord candidat, l’interface affichera la raison exacte et les contrôles déterministes resteront disponibles. L’accord peut être donné ou retiré depuis le profil du candidat, même après l’envoi du dossier. Chaque appel peut consommer le quota ou entraîner une facturation chez le fournisseur ; vérifiez son offre avant de l’activer. Le modèle signale des incohérences visibles, ne certifie pas l’authenticité et ne prend aucune décision de jury.
+
+### Brevo — courriels de compte
+
+| Variable | Valeur |
+|---|---|
+| `BREVO_API_KEY` | clé API v3 Brevo |
+| `BREVO_SENDER_EMAIL` | adresse expéditrice vérifiée dans Brevo |
+| `BREVO_SENDER_NAME` | `EMSP · Portail candidat` |
+| `APP_PUBLIC_URL` | `https://emsp-portal.vercel.app` |
+
+Les courriels de bienvenue et de réinitialisation restent désactivés tant que la clé ou l’expéditeur vérifié manque. Ne les activez pas pour des comptes fictifs.
+
 Le bucket reste privé : seuls le backend Render doté des credentials Neon et les contrôles d’accès de l’application peuvent lire les pièces. Le code continue à utiliser le stockage local en développement (`DOCUMENT_STORAGE_BACKEND=filesystem`).
 
 Pour exécuter la démo de comptes et pièces fictifs, télécharger les variables de la branche dans un `.env` local non versionné (`backend/.env`), puis exécuter depuis `backend/` :
@@ -90,7 +118,7 @@ Après publication, copier l’URL HTTPS Vercel dans `APP_PUBLIC_URL` sur Render
 2. Le domaine Vercel affiche l’accueil, ses images et son bandeau de démonstration ; ses routes métier répondent à travers Render.
 3. Se connecter aux comptes `@demo.emsp.ci` créés avec le mot de passe de démo choisi ; vérifier candidat, pièces, convocation, résultat et administration.
 4. Déposer puis télécharger une pièce fictive pour confirmer le trajet Render → bucket Neon privé.
-5. Ne pas configurer Brevo ou un domaine institutionnel réel avant le passage à une architecture de production, un avis de l’école sur la protection des données et un plan de sauvegarde.
+5. Ne pas connecter une vraie boîte Brevo, transmettre de vraies pièces à un modèle externe ou utiliser un domaine institutionnel avant l’accord de l’école sur l’usage des données et le passage à une architecture de production avec sauvegardes.
 
 ## Retour à un environnement propre
 

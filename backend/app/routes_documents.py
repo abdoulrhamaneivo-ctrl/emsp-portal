@@ -33,6 +33,7 @@ from urllib.parse import quote
 from app.auth import get_current_user
 from app.config import settings
 from app.db import get_db
+from app.demo_downloads import read_or_rebuild_demo_document
 from app.models import DocumentCandidature
 from app.rate_limit import check_rate_limit
 from app.storage_service import DocumentStorageService
@@ -269,7 +270,7 @@ def download_document(
     _require_owned(doc, current_user.numero_dossier)
 
     try:
-        content = service.read_file(doc.chemin_relatif)
+        content = read_or_rebuild_demo_document(db, doc, service)
     except (FileNotFoundError, ValueError):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Fichier introuvable sur le serveur."

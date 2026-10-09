@@ -8,14 +8,19 @@ remplace pas. C'est la raison pour laquelle ce routeur n'expose ni
 
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models import Candidature
+from app.models import Candidature, Controle, DocumentCandidature
+from app.rate_limit import check_rate_limit
 from app.routes_admin import journaliser, require_admin
+from app.routes_documents import get_storage_service
 from app.models import User
 from app.verif import rapport
+from app.verif.modele import analyser_documents, configuration_modele
 
 router = APIRouter(prefix="/api/admin", tags=["verification"])
 
@@ -38,12 +43,47 @@ def lancer_verification(
     admin: User = Depends(require_admin),
     request: Request = None,
 ) -> dict:
-    """Lance les contrôles déterministes sur un dossier et rend le rapport."""
+    """Lance les contrôles locaux puis, si autorisé, la lecture IA des pièces."""
+    if not check_rate_limit(f"admin-verif:{admin.id}:{numero_dossier}", limit=5, window_sec=60):
+        raise HTTPException(status_code=429, detail="Trop d’analyses lancées. Réessayez dans une minute.")
     dossier = _dossier(db, numero_dossier)
     rapport.lancer_controles(db, dossier)
+
+    # La vérification déterministe reste disponible sans partage externe.
+    # Aucune pièce ne quitte le serveur sans accord explicite et horodaté.
+    etat_configuration, message = configuration_modele()
+    controles_ia = []
+    if etat_configuration == "prete":
+        if dossier.consentement_tiers and dossier.consentement_le:
+            documents = (
+                db.query(DocumentCandidature)
+                .filter(DocumentCandidature.numero_dossier == dossier.numero_dossier)
+                .order_by(DocumentCandidature.type_document)
+                .all()
+            )
+            controles_ia, etat_configuration, message = analyser_documents(
+                dossier, documents, get_storage_service()
+            )
+        else:
+            etat_configuration = "consentement_requis"
+            message = "Le candidat n’a pas donné son accord. Aucune pièce n’a été transmise au fournisseur IA."
+    db.add_all(controles_ia)
+    # Persiste aussi l’état quand aucun écart n’a été trouvé : « analyse:false »
+    # ne doit plus laisser croire qu’un contrôle sans alerte n’a pas eu lieu.
+    db.add(Controle(
+        numero_dossier=dossier.numero_dossier,
+        document_id=None,
+        type_document=None,
+        controle="etat_lecture_modele",
+        statut="indeterminate",
+        gravite="info",
+        message=message[:500],
+        details=json.dumps({"etat": etat_configuration, "message": message[:500]}, ensure_ascii=False),
+        source="systeme",
+    ))
     journaliser(
         db, admin, "VERIFICATION_LANCEE", dossier.numero_dossier,
-        detail="contrôles déterministes", request=request,
+        detail=f"contrôles déterministes · IA {etat_configuration}", request=request,
     )
     db.commit()
     return rapport.resume(db, dossier)

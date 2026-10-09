@@ -34,3 +34,23 @@ services:
         value: "true"
       - key: SESSION_EXPIRE_MINUTES
         value: "120"
+      - key: BREVO_API_KEY
+        sync: false
+      - key: BREVO_SENDER_EMAIL
+        sync: false
+      - key: BREVO_SENDER_NAME
+        value: "EMSP · Portail candidat"
+      - key: VERIF_ACTIF
+        value: "false"
+      - key: VERIF_BASE_URL
+        sync: false
+      - key: VERIF_CLE_API
+        sync: false
+      - key: VERIF_MODELE
+        sync: false
+      - key: VERIF_PIECES_MAX
+        value: "3"
+      - key: VERIF_TIMEOUT_SEC
+        value: "60"
+      - key: CONSENTEMENT_TIERS_REQUIS
+        value: "true"

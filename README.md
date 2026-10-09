@@ -315,10 +315,12 @@ python3 outils_dossier_fictif.py            # rend le dossier CDT_0004 suspect
 python3 outils_dossier_fictif.py restaurer  # remet les valeurs d'origine
 ```
 
-### Lecture du contenu des pièces par un modèle
+### Lecture assistée du contenu des pièces par un modèle
 
-**Non configurée par défaut** : aucun appel réseau, aucune clé. L'interface
-retenue est celle de l'API OpenAI, ce qui couvre d'un seul code :
+**Désactivée par défaut** : aucun appel réseau sans configuration serveur
+complète et accord candidat horodaté. Les contrôles déterministes fonctionnent
+toujours sans IA. L'interface retenue est celle de l'API OpenAI Chat
+Completions, ce qui couvre d'un seul code :
 
 | Cible | `VERIF_BASE_URL` |
 |---|---|
@@ -332,8 +334,16 @@ peut basculer sur un modèle vision **local**, et les pièces de mineurs
 cessent alors de quitter le serveur. Ce n'est pas un autre projet, c'est
 une ligne de configuration.
 
-Renseignez `backend/.env` sur le modèle de `backend/.env.exemple`. `.env`
-est ignoré par git : une clé ne doit jamais être versionnée.
+Dans Render, renseignez `VERIF_ACTIF=true`, `VERIF_BASE_URL`, `VERIF_CLE_API`
+et `VERIF_MODELE`. Les PDF textuels sont lus sur le serveur ; les JPG/PNG
+nécessitent un modèle vision compatible. `VERIF_PIECES_MAX` vaut 3 par défaut
+pour limiter les appels. Les pièces ne partent vers le fournisseur qu'après
+consentement explicite ; le modèle ne décide jamais d'une admission et ne
+certifie pas l'authenticité d'un document. La lecture d'une image ou l'appel
+du modèle peut consommer un quota ou être facturé par le fournisseur.
+
+En local, les mêmes variables peuvent être renseignées dans `backend/.env`,
+ignoré par Git. Une clé ne doit jamais être versionnée.
 
 ### Consentement du candidat
 

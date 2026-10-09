@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from app.auth import get_current_user, hash_password
 from app.config import settings
 from app.db import get_db
+from app.demo_downloads import read_or_rebuild_demo_document
 from app.models import (
     ActionAdmin,
     Candidature,
@@ -36,6 +37,7 @@ from app.models import (
     MessageContact,
     User,
 )
+from app.pdf_documents import build_convocation_pdf, build_result_certificate_pdf
 from app.rate_limit import check_rate_limit
 from app.schemas import SPECIALITES
 from app.storage_service import DocumentStorageService
@@ -548,7 +550,7 @@ def telecharger_document_admin(
         raise HTTPException(status_code=404, detail="Document introuvable.")
     service = _service()
     try:
-        content = service.read_file(doc.chemin_relatif)
+        content = read_or_rebuild_demo_document(db, doc, service)
     except (FileNotFoundError, ValueError):
         raise HTTPException(status_code=404, detail="Fichier introuvable sur le serveur.")
 
@@ -592,6 +594,63 @@ def piece_par_type(
     if doc is None:
         raise HTTPException(status_code=404, detail="Pièce non déposée.")
     return telecharger_document_admin(doc.id, db=db, admin=admin, request=request)
+
+
+@router.get("/candidatures/{numero_dossier}/convocation.pdf")
+def telecharger_convocation_generee(
+    numero_dossier: str,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+    request: Request = None,
+):
+    """Télécharge la convocation EMSP avec logo, ou le PDF signé déposé."""
+    dossier = _dossier(db, numero_dossier)
+    if not dossier.date_compo or not dossier.centre_compo:
+        raise HTTPException(status_code=409, detail="Enregistrez d’abord la date et le centre de composition.")
+    document = db.query(DocumentCandidature).filter(
+        DocumentCandidature.numero_dossier == dossier.numero_dossier,
+        DocumentCandidature.type_document == "convocation",
+    ).first()
+    if document is not None:
+        if str(dossier.email or "").lower().endswith("@demo.emsp.ci"):
+            pdf = build_convocation_pdf(dossier)
+        else:
+            try:
+                pdf = _service().read_file(document.chemin_relatif)
+            except FileNotFoundError:
+                pdf = build_convocation_pdf(dossier)
+            except Exception as exc:
+                raise HTTPException(status_code=503, detail="La convocation déposée est momentanément inaccessible.") from exc
+    else:
+        pdf = build_convocation_pdf(dossier)
+    journaliser(db, admin, "GENERE_CONVOCATION_PDF", dossier.numero_dossier, request=request)
+    db.commit()
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="convocation-{dossier.numero_dossier}.pdf"'},
+    )
+
+
+@router.get("/candidatures/{numero_dossier}/resultat.pdf")
+def telecharger_resultat_genere(
+    numero_dossier: str,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+    request: Request = None,
+):
+    """Génère l’attestation EMSP uniquement après la décision du jury."""
+    dossier = _dossier(db, numero_dossier)
+    if dossier.admis_concours is None:
+        raise HTTPException(status_code=409, detail="Publiez d’abord la décision officielle du jury.")
+    pdf = build_result_certificate_pdf(dossier)
+    journaliser(db, admin, "GENERE_RESULTAT_PDF", dossier.numero_dossier, request=request)
+    db.commit()
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="attestation-resultat-{dossier.numero_dossier}.pdf"'},
+    )
 
 
 # ───────────────────────────── convocation ─────────────────────────────

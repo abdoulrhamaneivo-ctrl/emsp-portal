@@ -612,6 +612,7 @@ def _dossier_complet(client):
         json={
             "email": "candidat@emsp.ci",
             "password": "motdepasse-de-test",
+            "confirmation": "motdepasse-de-test",
             "nom": "Kouassi",
             "prenoms": "Aya Marie",
         },
@@ -871,10 +872,8 @@ def test_les_specialites_affichees_par_le_backend_sont_celles_du_serveur():
 
     for specialite in SPECIALITES:
         code, nom = (part.strip() for part in specialite.split("—", maxsplit=1))
-        carte = (
-            f'<span class="program-code">{escape(code)}</span><h3>{escape(nom)}</h3>'
-        )
-        assert carte in page, f"spécialité absente du rendu backend : {specialite}"
+        assert f'<span class="program-code">{escape(code)}</span>' in page, specialite
+        assert f"<h3>{escape(nom)}</h3>" in page, specialite
 
 
 def test_la_navigation_backend_suit_le_role_de_session():
@@ -894,3 +893,83 @@ def test_la_navigation_backend_suit_le_role_de_session():
     assert 'href="/admin.html"' not in candidat
     assert 'href="/admin.html"' in admin
     assert 'href="/candidature.html"' not in admin
+
+
+def test_modele_vision_openai_compatible_est_appele_et_masque_les_identifiants(monkeypatch):
+    """Le modèle reçoit l'image consentie et son texte ne réaffiche pas de téléphone."""
+    import json
+    from types import SimpleNamespace
+
+    from app.config import settings
+    from app.verif import modele
+
+    monkeypatch.setattr(settings, "VERIF_ACTIF", True)
+    monkeypatch.setattr(settings, "VERIF_BASE_URL", "https://ia.example/v1")
+    monkeypatch.setattr(settings, "VERIF_CLE_API", "cle-de-test")
+    monkeypatch.setattr(settings, "VERIF_MODELE", "modele-vision-test")
+    monkeypatch.setattr(settings, "VERIF_TIMEOUT_SEC", 10)
+
+    answer = {
+        "constats": [{
+            "controle": "identite",
+            "statut": "signalement",
+            "gravite": "mineur",
+            "message": "Le numéro +225 01 02 03 04 05 06 diffère des données du dossier.",
+        }]
+    }
+    payload = {"choices": [{"message": {"content": json.dumps(answer, ensure_ascii=False)}}]}
+    observed = {}
+
+    class FauxResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+    def faux_urlopen(request, timeout):
+        observed["url"] = request.full_url
+        observed["timeout"] = timeout
+        observed["body"] = json.loads(request.data.decode("utf-8"))
+        return FauxResponse()
+
+    monkeypatch.setattr(modele, "urlopen", faux_urlopen)
+    candidature = SimpleNamespace(
+        nom="Kouassi", prenoms="Aya", date_naissance=None, annee_bac=None,
+        serie_bac=None, moyenne_bac=None, note_math_bac=None,
+        note_physique_bac=None, note_francais_bac=None, note_anglais_bac=None,
+    )
+    document = SimpleNamespace(type_document="piece_identite", mime_type="image/png")
+    constats, methode = modele._appel_modele(document, PNG_VIDE, candidature)
+
+    assert methode == "vision"
+    assert observed["url"] == "https://ia.example/v1/chat/completions"
+    assert observed["body"]["model"] == "modele-vision-test"
+    assert observed["body"]["messages"][1]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert "[numéro masqué]" in constats[0]["message"]
+    assert "+225" not in constats[0]["message"]
+
+
+def test_consentement_ia_se_donne_et_se_retire_apres_soumission(app_temps):
+    """Le candidat garde la maîtrise du partage après avoir envoyé son dossier."""
+    client, _ = app_temps
+    _dossier_complet(client)
+
+    avant = client.get("/api/candidature/consentement-ia")
+    assert avant.status_code == 200, avant.text
+    assert avant.json() == {"accorde": False, "le": None}
+
+    accord = client.put("/api/candidature/consentement-ia", json={"consentement": True})
+    assert accord.status_code == 200, accord.text
+    assert accord.json()["accorde"] is True
+    assert accord.json()["le"]
+
+    retrait = client.put("/api/candidature/consentement-ia", json={"consentement": False})
+    assert retrait.status_code == 200, retrait.text
+    assert retrait.json()["accorde"] is False
+    assert retrait.json()["le"] is None

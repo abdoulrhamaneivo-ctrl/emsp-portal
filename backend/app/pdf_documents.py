@@ -239,3 +239,59 @@ def build_result_certificate_pdf(candidature) -> bytes:
     _signature_block(page, 124)
     _footer(page, candidature.numero_dossier or "EMSP", demo=_is_demo(candidature))
     return _make_pdf(page)
+
+
+_DEMO_DOCUMENT_LABELS = {
+    "attestation_bac": "Attestation du baccalauréat",
+    "releve_notes_bac": "Relevé de notes du baccalauréat",
+    "piece_identite": "Pièce d’identité",
+    "bulletins_seconde": "Bulletins de seconde",
+    "bulletins_premiere": "Bulletins de première",
+    "bulletins_terminale": "Bulletins de terminale",
+    "photo_identite": "Photo d’identité",
+    "lettre_motivation": "Lettre de motivation",
+    "acte_naissance": "Acte de naissance",
+    "cv": "Curriculum vitæ",
+}
+
+
+def build_demo_document_pdf(candidature, type_document: str) -> bytes:
+    """Génère une pièce-échantillon brandée quand un fichier de démo manque.
+
+    Les comptes ``@demo.emsp.ci`` ne doivent jamais présenter ces PDF comme
+    des justificatifs recevables : chaque page porte un marquage explicite.
+    """
+    label = _DEMO_DOCUMENT_LABELS.get(type_document)
+    if label is None:
+        raise ValueError("Type de document de démonstration inconnu.")
+
+    page = _Page()
+    _header(page, "PIÈCE DE DÉMONSTRATION", "Exemple fictif · non recevable pour une candidature réelle")
+    name = f"{candidature.prenoms or ''} {candidature.nom or ''}".strip() or "Candidate / candidat"
+    page.text(_PAGE_W / 2, 565, name, 23, "F3", _GREEN, "center")
+    page.text(_PAGE_W / 2, 540, f"Numéro de dossier : {candidature.numero_dossier or '—'}", 10, "F2", _MUTED, "center")
+    page.fill(48, 460, 499, 58, _PAPER)
+    page.stroke_rect(48, 460, 499, 58, _GOLD, 0.8)
+    page.text(65, 496, "PIÈCE ATTENDUE", 8, "F2", _MUTED)
+    page.text(65, 476, label, 13, "F2", _GREEN)
+    page.fill(48, 356, 499, 88, (0.98, 0.94, 0.91))
+    page.stroke_rect(48, 356, 499, 88, (0.63, 0.25, 0.19), 0.8)
+    page.text(_PAGE_W / 2, 420, "FICTIF · DONNÉES DE DÉMONSTRATION", 10, "F2", (0.55, 0.2, 0.16), "center")
+    _wrap(
+        page,
+        66,
+        400,
+        "Ce fichier sert uniquement à présenter le portail. Il ne reproduit aucun justificatif réel et ne peut pas être utilisé pour l’instruction d’un dossier.",
+        82,
+        size=10,
+        leading=16,
+        font="F1",
+        color=_INK,
+    )
+    page.text(48, 320, "Données affichées", 8, "F2", _GREEN)
+    page.text(48, 298, f"Nom : {candidature.nom or '—'}", 10, "F1", _INK)
+    page.text(48, 278, f"Prénoms : {candidature.prenoms or '—'}", 10, "F1", _INK)
+    page.text(48, 258, f"Pièce : {label}", 10, "F1", _INK)
+    _signature_block(page, 124)
+    _footer(page, candidature.numero_dossier or "EMSP", demo=True)
+    return _make_pdf(page)

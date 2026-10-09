@@ -30,7 +30,7 @@ from app.models import (
     Session,
     User,
 )
-from app.pdf_documents import build_convocation_pdf
+from app.pdf_documents import build_convocation_pdf, build_demo_document_pdf
 from app.routes_documents import get_storage_service
 
 DOMAINE_DEMO = "@demo.emsp.ci"
@@ -435,14 +435,7 @@ def executer(mot_de_passe: str, reset: bool) -> int:
 
             if item.get("pieces"):
                 for type_doc in TYPES_PIECES:
-                    data = _pdf(
-                        f"EMSP — {TITRES[type_doc]}",
-                        [
-                            f"Dossier : {numero}",
-                            f"Candidat : {champs['prenoms']} {champs['nom']}",
-                            "Document de démonstration généré automatiquement.",
-                        ],
-                    )
+                    data = build_demo_document_pdf(candidature, type_doc)
                     _deposer(service, db, numero, type_doc, data)
                     nb_pieces += 1
             if item.get("convocation"):
