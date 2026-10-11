@@ -131,6 +131,55 @@ def register(client, email="candidate@example.com", password="motdepasse123"):
     return resp.json()
 
 
+def test_inscription_declenche_le_message_de_confirmation_brevo(client, monkeypatch):
+    """Le parcours inscrit un dossier et confie le courriel de bienvenue à Brevo."""
+    import json
+
+    from app import email_service
+
+    monkeypatch.setattr(settings, "BREVO_API_KEY", "cle-brevo-de-test")
+    monkeypatch.setattr(settings, "BREVO_SENDER_EMAIL", "ecole@example.test")
+    monkeypatch.setattr(settings, "BREVO_SENDER_NAME", "EMSP Test")
+    monkeypatch.setattr(settings, "APP_PUBLIC_URL", "https://emsp.example.test")
+    observed = {}
+
+    class FauxReponse:
+        status = 201
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def faux_urlopen(request, timeout):
+        observed["url"] = request.full_url
+        observed["timeout"] = timeout
+        observed["payload"] = json.loads(request.data.decode("utf-8"))
+        return FauxReponse()
+
+    monkeypatch.setattr(email_service, "urlopen", faux_urlopen)
+    response = client.post(
+        "/api/auth/register",
+        json={
+            "email": "candidate-test@example.test",
+            "password": "motdepasse123",
+            "confirmation": "motdepasse123",
+            "nom": "Candidat",
+            "prenoms": "Test EMSP",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert observed["url"] == email_service.BREVO_SEND_URL
+    assert observed["timeout"] == 8
+    assert observed["payload"]["to"] == [{"email": "candidate-test@example.test", "name": "Test EMSP"}]
+    assert observed["payload"]["sender"] == {"name": "EMSP Test", "email": "ecole@example.test"}
+    assert observed["payload"]["subject"] == "Bienvenue sur le portail EMSP"
+    assert response.json()["numero_dossier"] in observed["payload"]["htmlContent"]
+    assert "https://emsp.example.test/espace-candidat.html" in observed["payload"]["htmlContent"]
+
+
 def test_health_verifie_la_connexion_a_la_base(client):
     response = client.get("/health")
     assert response.status_code == 200, response.text

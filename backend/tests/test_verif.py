@@ -907,6 +907,7 @@ def test_modele_vision_openai_compatible_est_appele_et_masque_les_identifiants(m
     monkeypatch.setattr(settings, "VERIF_BASE_URL", "https://ia.example/v1")
     monkeypatch.setattr(settings, "VERIF_CLE_API", "cle-de-test")
     monkeypatch.setattr(settings, "VERIF_MODELE", "modele-vision-test")
+    monkeypatch.setattr(settings, "VERIF_MODELE_VISION", "google/gemma-4-31b-it")
     monkeypatch.setattr(settings, "VERIF_TIMEOUT_SEC", 10)
 
     answer = {
@@ -949,8 +950,11 @@ def test_modele_vision_openai_compatible_est_appele_et_masque_les_identifiants(m
 
     assert methode == "vision"
     assert observed["url"] == "https://ia.example/v1/chat/completions"
-    assert observed["body"]["model"] == "modele-vision-test"
-    assert observed["body"]["messages"][1]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert observed["body"]["model"] == "google/gemma-4-31b-it"
+    assert observed["body"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert observed["body"]["max_tokens"] == 1800
+    assert observed["body"]["messages"][1]["content"][0]["type"] == "image_url"
+    assert observed["body"]["messages"][1]["content"][0]["image_url"]["url"].startswith("data:image/png;base64,")
     assert "[numéro masqué]" in constats[0]["message"]
     assert "+225" not in constats[0]["message"]
 

@@ -173,8 +173,11 @@ def _appel_modele(document: DocumentCandidature, contenu: bytes, c: Candidature)
         "aucune_incoherence_apparente et un message qui dit ‘aucune incohérence apparente’. Maximum 4 constats. "
         "Ne retourne jamais un tableau vide."
     )
+    model_name = settings.VERIF_MODELE
+    if methode == "vision" and settings.VERIF_MODELE_VISION.strip():
+        model_name = settings.VERIF_MODELE_VISION.strip()
     payload = {
-        "model": settings.VERIF_MODELE,
+        "model": model_name,
         "temperature": 0,
         "max_tokens": 700,
         "messages": [
@@ -186,9 +189,19 @@ def _appel_modele(document: DocumentCandidature, contenu: bytes, c: Candidature)
     # Nemotron consomme une partie du plafond de génération pour son raisonnement
     # interne. Un budget borné laisse de la place pour le JSON final, sans ralentir
     # inutilement le parcours candidat.
-    if (urlsplit(base_url).hostname or "").lower() == "integrate.api.nvidia.com":
+    if (
+        (urlsplit(base_url).hostname or "").lower() == "integrate.api.nvidia.com"
+        and model_name == "nvidia/nemotron-3.5-lightning-30b-a3b"
+    ):
         payload["max_tokens"] = 1800
         payload["reasoning_budget"] = 256
+    elif model_name == "google/gemma-4-31b-it":
+        payload["max_tokens"] = 1800
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
+        # Gemma recommande de placer l'image avant le texte pour les entrées multimodales.
+        if methode == "vision":
+            user_content = payload["messages"][1]["content"]
+            payload["messages"][1]["content"] = [user_content[1], user_content[0]]
     url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
     request = Request(
         url,

@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     VERIF_BASE_URL: str = ""
     VERIF_CLE_API: str = ""
     VERIF_MODELE: str = ""
+    VERIF_MODELE_VISION: str = ""
     VERIF_PIECES_MAX: int = 3
     VERIF_TOLERANCE_MOYENNE: float = 0.5
     VERIF_TIMEOUT_SEC: int = 60
