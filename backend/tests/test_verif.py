@@ -955,6 +955,83 @@ def test_modele_vision_openai_compatible_est_appele_et_masque_les_identifiants(m
     assert "+225" not in constats[0]["message"]
 
 
+def test_modele_recupere_un_json_valide_meme_si_la_reponse_contient_une_suite():
+    """Nemotron peut continuer après le JSON demandé : seul l'objet valide est exploité."""
+    from app.verif.modele import _objet_json_reponse
+
+    reponse = (
+        'Voici le résultat : ```json\n'
+        '{"constats":[{"controle":"identite","statut":"indetermine",'
+        '"gravite":"info","message":"Comparaison à vérifier."}]}\n'
+        '``` puis du texte ajouté par le modèle'
+    )
+
+    assert _objet_json_reponse(reponse) == {
+        "constats": [{
+            "controle": "identite",
+            "statut": "indetermine",
+            "gravite": "info",
+            "message": "Comparaison à vérifier.",
+        }]
+    }
+
+
+def test_modele_nvidia_recoit_un_budget_de_raisonnement_borne(monkeypatch):
+    """Le budget NVIDIA laisse assez de génération pour les constats structurés."""
+    import json
+    from types import SimpleNamespace
+
+    from app.config import settings
+    from app.verif import modele
+
+    monkeypatch.setattr(settings, "VERIF_ACTIF", True)
+    monkeypatch.setattr(settings, "VERIF_BASE_URL", "https://integrate.api.nvidia.com/v1")
+    monkeypatch.setattr(settings, "VERIF_CLE_API", "cle-de-test")
+    monkeypatch.setattr(settings, "VERIF_MODELE", "nvidia/nemotron-3.5-lightning-30b-a3b")
+
+    observed = {}
+    result = {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({
+        "constats": [{
+            "controle": "identite", "statut": "indetermine", "gravite": "info",
+            "message": "Document fictif transmis pour test.",
+        }]
+    })}}]}
+
+    class FauxResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(result).encode("utf-8")
+
+    def faux_urlopen(request, timeout):
+        observed["body"] = json.loads(request.data.decode("utf-8"))
+        return FauxResponse()
+
+    monkeypatch.setattr(modele, "urlopen", faux_urlopen)
+    candidature = SimpleNamespace(
+        nom="Kouassi", prenoms="Aya", date_naissance=None, annee_bac=None,
+        serie_bac=None, moyenne_bac=None, note_math_bac=None,
+        note_physique_bac=None, note_francais_bac=None, note_anglais_bac=None,
+    )
+    document = SimpleNamespace(type_document="piece_identite", mime_type="application/pdf")
+    contenu = b"%PDF-1.4"
+
+    # Le faux extracteur évite de confondre le test de payload avec celui de pypdf.
+    monkeypatch.setattr(modele, "_pdf_text", lambda _content: "Document fictif lisible de plus de trente caractères.")
+    constats, methode = modele._appel_modele(document, contenu, candidature)
+
+    assert methode == "texte_pdf"
+    assert constats[0]["statut"] == "indetermine"
+    assert observed["body"]["reasoning_budget"] == 256
+    assert observed["body"]["max_tokens"] == 1800
+
+
 def test_consentement_ia_se_donne_et_se_retire_apres_soumission(app_temps):
     """Le candidat garde la maîtrise du partage après avoir envoyé son dossier."""
     client, _ = app_temps

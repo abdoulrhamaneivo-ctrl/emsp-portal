@@ -93,6 +93,29 @@ def _pdf_text(content: bytes) -> str:
     return texte.strip()[:14000]
 
 
+def _objet_json_reponse(answer: object) -> dict:
+    """Extrait le premier objet de constats valide d'une réponse parfois entourée de texte.
+
+    Certains modèles ajoutent une clôture Markdown ou continuent après l'objet demandé.
+    On tolère ces enveloppes, sans accepter un JSON partiel ou un tableau de forme inattendue.
+    """
+    if isinstance(answer, list):
+        answer = "".join(part.get("text", "") for part in answer if isinstance(part, dict))
+    texte = str(answer or "").strip()
+    texte = re.sub(r"^```(?:json)?\s*", "", texte, flags=re.IGNORECASE)
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(texte):
+        if char != "{":
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(texte[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict) and isinstance(parsed.get("constats"), list):
+            return parsed
+    raise ValueError("objet constats absent ou tronqué")
+
+
 def _appel_modele(document: DocumentCandidature, contenu: bytes, c: Candidature) -> tuple[list[dict], str]:
     mime = (document.mime_type or "").lower()
     texte_document = ""
@@ -160,6 +183,12 @@ def _appel_modele(document: DocumentCandidature, contenu: bytes, c: Candidature)
         ],
     }
     base_url = settings.VERIF_BASE_URL.strip().rstrip("/")
+    # Nemotron consomme une partie du plafond de génération pour son raisonnement
+    # interne. Un budget borné laisse de la place pour le JSON final, sans ralentir
+    # inutilement le parcours candidat.
+    if (urlsplit(base_url).hostname or "").lower() == "integrate.api.nvidia.com":
+        payload["max_tokens"] = 1800
+        payload["reasoning_budget"] = 256
     url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
     request = Request(
         url,
@@ -181,6 +210,11 @@ def _appel_modele(document: DocumentCandidature, contenu: bytes, c: Candidature)
             raise ModeleError("Le fournisseur IA a refusé la clé ou le modèle. Vérifiez VERIF_CLE_API et VERIF_MODELE dans Render.") from None
         if exc.code == 429:
             raise ModeleError("Le quota du fournisseur IA est atteint. Réessayez plus tard ou vérifiez son offre.") from None
+        if exc.code in (400, 422) and methode == "vision":
+            raise ModeleError(
+                "Le modèle IA configuré ne sait pas lire cette image. Utilisez un PDF contenant du texte sélectionnable, "
+                "ou configurez un modèle compatible avec les images."
+            ) from None
         logger.warning("Réponse IA HTTP %s.", exc.code)
         raise ModeleError("Le fournisseur IA est momentanément indisponible.") from None
     except (URLError, TimeoutError, OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -188,14 +222,20 @@ def _appel_modele(document: DocumentCandidature, contenu: bytes, c: Candidature)
         raise ModeleError("Le fournisseur IA n’a pas répondu. Vérifiez l’URL et réessayez.") from None
 
     try:
-        answer = result["choices"][0]["message"]["content"]
-        if isinstance(answer, list):
-            answer = "".join(part.get("text", "") for part in answer if isinstance(part, dict))
-        parsed = json.loads(str(answer).strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip())
-        raw_findings = parsed.get("constats")
+        choice = result["choices"][0]
+        answer = choice["message"]["content"]
+        parsed = _objet_json_reponse(answer)
+        raw_findings = parsed["constats"]
         if not isinstance(raw_findings, list):
             raise ValueError("constats manquants")
-    except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
+    except (KeyError, IndexError, TypeError, ValueError):
+        try:
+            if result["choices"][0].get("finish_reason") == "length":
+                raise ModeleError(
+                    "La réponse IA a été tronquée. Réessayez ou augmentez le plafond de génération du modèle."
+                ) from None
+        except (KeyError, IndexError, TypeError):
+            pass
         raise ModeleError("La réponse du modèle n’a pas le format attendu. Réessayez ou choisissez un modèle compatible.") from None
 
     findings = []
