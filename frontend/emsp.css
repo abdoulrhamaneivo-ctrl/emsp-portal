@@ -1106,6 +1106,33 @@ html[data-theme="dark"] { color-scheme: dark; }
 :root[data-theme="dark"] .result-specialty { background-color: var(--emsp-surface-raised); }
 :root[data-theme="dark"] .dashboard-stats .stat-box strong,
 :root[data-theme="dark"] .admin-stats .stat-box strong { color: #c8efd4; }
+:root[data-theme="dark"] .brand-logo {
+  padding: 4px 9px;
+  border: 1px solid rgba(255,220,0,.5);
+  border-radius: 5px;
+  background: #fffdf6;
+  box-shadow: 0 5px 18px rgba(0,0,0,.28), 0 0 0 3px rgba(131,214,164,.055);
+}
+:root[data-theme="dark"] .official-documents-mark,
+:root[data-theme="dark"] .result-seal {
+  border-color: rgba(131,214,164,.68);
+  background: radial-gradient(circle, rgba(131,214,164,.12), rgba(20,35,26,.72));
+  color: #c4edd1;
+  box-shadow: inset 0 0 0 3px rgba(131,214,164,.06), 0 7px 20px rgba(0,0,0,.16);
+}
+:root[data-theme="dark"] .official-document-card { border-color: #304338; }
+:root[data-theme="dark"] .official-document-card-result { border-top-color: #e6cb55; }
+:root[data-theme="dark"] .official-document-card:hover,
+:root[data-theme="dark"] .official-document-card:focus-within {
+  border-color: #638571;
+  box-shadow: 0 17px 36px rgba(0,0,0,.28), 0 0 24px rgba(131,214,164,.055);
+}
+:root[data-theme="dark"] .official-document-card a,
+:root[data-theme="dark"] .document-page-links a,
+:root[data-theme="dark"] .result-actions .text-link { color: #a8edc0; }
+:root[data-theme="dark"] .upload-card-check { border-color: #688372; background: #0e1b14; color: #c5d1ca; }
+:root[data-theme="dark"] .upload-card.is-uploading .upload-card-check { border-color: #e2ca63; background: #393111; color: #ffe994; }
+:root[data-theme="dark"] .upload-card.is-uploading { border-color: #8b7e3e; background: #262514; }
 :root[data-theme="dark"] .dashboard-highlight { background-image: linear-gradient(90deg,rgba(5,34,22,.98),rgba(5,34,22,.95) 54%,rgba(5,34,22,.82)),url("/media/Photo%20de%20Al%C3%A8ve%286%29.jpg"); }
 :root[data-theme="dark"] .admin-heading::after { background-image: linear-gradient(90deg,var(--emsp-paper),rgba(11,21,16,.4)),url("/media/Photo%20de%20Al%C3%A8ve%284%29.jpg"); opacity: .27; }
 :root[data-theme="dark"] .site-footer { background: #07110b; }

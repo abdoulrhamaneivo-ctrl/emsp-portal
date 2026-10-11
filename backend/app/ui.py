@@ -215,9 +215,8 @@ def _page_template(
       (() => {{
         try {{
           const saved = localStorage.getItem('emsp-theme');
-          const systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-          document.documentElement.dataset.theme = saved === 'dark' || saved === 'light' ? saved : systemDark ? 'dark' : 'light';
-        }} catch (_) {{ document.documentElement.dataset.theme = 'light'; }}
+          document.documentElement.dataset.theme = saved === 'light' ? 'light' : 'dark';
+        }} catch (_) {{ document.documentElement.dataset.theme = 'dark'; }}
       }})();
     </script>
     <style>
@@ -428,7 +427,7 @@ def _page_template(
       }}
       @media(prefers-reduced-motion:reduce) {{ *,*::before,*::after {{ scroll-behavior:auto!important; animation-duration:.01ms!important; animation-iteration-count:1!important; transition-duration:.01ms!important; }} }}
     </style>
-    <link rel="stylesheet" href="/assets/emsp.css?v=20261010-demo-docs-1" />
+    <link rel="stylesheet" href="/assets/emsp.css?v=20261011-dark-brand-1" />
   </head>
   <body>
     <div class="reading-progress" aria-hidden="true"><span data-reading-progress></span></div>
