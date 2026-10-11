@@ -7,11 +7,11 @@
   "rewrites": [
     {
       "source": "/",
-      "destination": "https://emsp-portal.onrender.com/"
+      "destination": "https://emsp-portal-correction-prof.onrender.com/"
     },
     {
       "source": "/:path*",
-      "destination": "https://emsp-portal.onrender.com/:path*"
+      "destination": "https://emsp-portal-correction-prof.onrender.com/:path*"
     }
   ],
   "headers": [
