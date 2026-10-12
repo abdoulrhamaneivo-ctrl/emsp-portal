@@ -118,7 +118,7 @@ def refresh_session_cookie(
 
 def est_admin(user) -> bool:
     """Vrai si le compte est un administrateur actif."""
-    return bool(user) and (getattr(user, "role", "CANDIDAT") or "").upper() == "ADMIN" and getattr(
+    return bool(user) and (getattr(user, "role", "CANDIDAT") or "").upper() in {"ADMIN", "SUPER_ADMIN"} and getattr(
         user, "actif", True
     )
 

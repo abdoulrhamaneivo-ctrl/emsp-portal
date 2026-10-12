@@ -11,6 +11,7 @@ Montage :
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -96,29 +97,48 @@ PHOTOS_DIR = os.path.abspath(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
-    _amorcer_admin()
+    app.state.database_ready = False
+    app.state.database_startup_error = None
+    bootstrap = asyncio.create_task(asyncio.to_thread(_initialiser_backend, app))
+    app.state.database_bootstrap_task = bootstrap
+    try:
+        # Let Uvicorn bind its port even if Neon is slow or unreachable. Render
+        # can then probe /health and report database readiness separately.
+        await asyncio.wait_for(asyncio.shield(bootstrap), timeout=20)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "[startup] la base prend plus de 20 s ; le serveur ouvre le port "
+            "et /health reste indisponible jusqu'à la fin de l'initialisation"
+        )
     yield
 
 
 def _amorcer_admin() -> None:
-    """Crée le compte « super admin » si ADMIN_EMAIL/ADMIN_PASSWORD sont définis.
-
-    Sans ces variables, aucun administrateur n'est créé : c'est volontaire,
-    on ne fabrique pas d'accès privilégié par défaut.
-    """
-    if not settings.ADMIN_EMAIL or not settings.ADMIN_PASSWORD:
-        return
+    """Promouvoir un administrateur existant, sans créer ni réinitialiser de compte."""
     try:
-        from app.admin_cli import creer_admin
+        from app.admin_cli import promouvoir_admin_existant
 
-        ok, message = creer_admin(
-            settings.ADMIN_EMAIL, settings.ADMIN_PASSWORD, settings.ADMIN_NOM
-        )
+        ok, message = promouvoir_admin_existant(settings.ADMIN_EMAIL or None)
         if ok:
-            print(f"[admin] {message}")
+            logger.info("[admin] %s", message)
+        else:
+            logger.warning("[admin] %s", message)
     except Exception as exc:  # pragma: no cover - démarrage ne doit jamais échouer
-        print(f"[admin] création impossible : {type(exc).__name__}")
+        logger.warning("[admin] promotion impossible : %s", type(exc).__name__)
+
+
+def _initialiser_backend(app: FastAPI) -> None:
+    """Initialiser la base et préparer un état de santé exploitable par Render."""
+    logger.info("[startup] initialisation de la base de données")
+    try:
+        init_db()
+        _amorcer_admin()
+    except Exception as exc:
+        app.state.database_startup_error = type(exc).__name__
+        logger.exception("[startup] initialisation de la base échouée")
+        return
+    app.state.database_ready = True
+    logger.info("[startup] base de données prête")
 
 
 app = FastAPI(title="EMSP Portail Candidature", lifespan=lifespan)
@@ -180,9 +200,17 @@ app.include_router(verif_router)  # contrôles de vérification (rôle ADMIN)
 
 
 @app.get("/health", tags=["meta"])
-def health():
+def health(request: Request):
     # Vérification de vie uniquement : ne pas garder Neon actif via les pings
     # fréquents de Render, afin de rester dans le quota gratuit.
+    database_ready = getattr(request.app.state, "database_ready", True)
+    if not database_ready:
+        startup_error = getattr(request.app.state, "database_startup_error", None)
+        status = "error" if startup_error else "starting"
+        return JSONResponse(
+            status_code=503,
+            content={"status": status, "database": "not_ready"},
+        )
     return {"status": "ok"}
 
 
@@ -209,7 +237,7 @@ def connexion_html(request: Request, user=Depends(get_optional_user)):
     if user is not None:
         destination = (
             "/admin.html"
-            if (user.role or "CANDIDAT").upper() == "ADMIN"
+            if (user.role or "CANDIDAT").upper() in {"ADMIN", "SUPER_ADMIN"}
             else "/espace-candidat.html"
         )
         return RedirectResponse(url=destination, status_code=302)

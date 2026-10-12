@@ -130,3 +130,37 @@ def send_password_changed_email(email: str, nom_affiche: str | None) -> None:
         "Votre compte est à jour.", f"Bonjour {name},", body,
         "Ouvrir mon espace", settings.APP_PUBLIC_URL.rstrip("/") + "/profil.html",
     ))
+
+
+def send_convocation_notification(email: str, prenoms: str, numero: str, date: str, heure: str, centre: str) -> bool:
+    """Notifie le candidat ; le PDF officiel reste accessible dans son espace protégé."""
+    name = (prenoms or "").strip() or "candidat"
+    body = (
+        f"Votre convocation au concours EMSP est disponible pour le dossier "
+        f"<strong>{escape(numero)}</strong>. Date : <strong>{escape(date)}</strong>"
+        + (f" à <strong>{escape(heure)}</strong>" if heure else "")
+        + f". Centre : <strong>{escape(centre)}</strong>. Connectez-vous à votre espace pour télécharger le PDF."
+    )
+    return _send(
+        email, name, "Votre convocation au concours EMSP est disponible",
+        _email_shell(
+            "Votre convocation est prête.", f"Bonjour {name},", body,
+            "Consulter ma convocation", settings.APP_PUBLIC_URL.rstrip("/") + "/convocation.html",
+        ),
+    )
+
+
+def send_result_notification(email: str, prenoms: str, numero: str) -> bool:
+    """Annonce la publication d'une décision humaine déjà enregistrée."""
+    name = (prenoms or "").strip() or "candidat"
+    body = (
+        f"La décision du jury concernant le dossier <strong>{escape(numero)}</strong> "
+        "est publiée dans votre espace EMSP. Votre attestation de résultat y est disponible."
+    )
+    return _send(
+        email, name, "Votre résultat EMSP est disponible",
+        _email_shell(
+            "La décision du jury est publiée.", f"Bonjour {name},", body,
+            "Consulter mon résultat", settings.APP_PUBLIC_URL.rstrip("/") + "/resultat.html",
+        ),
+    )

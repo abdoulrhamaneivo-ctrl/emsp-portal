@@ -25,8 +25,8 @@ from sqlalchemy.orm import Session
 
 from app.auth import get_current_user
 from app.db import get_db
-from app.models import Candidature, DocumentCandidature
-from app.schemas import FILIERES, CandidatureOut, SubmitIn
+from app.models import Candidature, DocumentCandidature, ParametresConcours, PieceRequise, ProgrammeConcours
+from app.schemas import CandidatureOut, SubmitIn
 from app.storage_service import TYPES_AUTORISES
 from app.validators import (
     validate_annee_bac,
@@ -325,11 +325,9 @@ def _validate_patch_value(field: str, value: Any) -> Any:
     if field in ("choix_1_filiere", "choix_2_filiere"):
         if value is None and field == "choix_2_filiere":
             return None
-        if value not in FILIERES:
-            raise ValueError(
-                f"Le champ {field} doit être parmi : {', '.join(FILIERES)}."
-            )
-        return value
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"Le champ {field} est requis.")
+        return value.strip()
     if field == "sexe":
         if value not in SEXES:
             raise ValueError("Le champ sexe doit être Masculin ou Féminin.")
@@ -403,7 +401,15 @@ def _missing_document_types(db: Session, candidature: Any) -> List[str]:
     numero_dossier = getattr(candidature, "numero_dossier", None)
     if not numero_dossier:
         return list(TYPES_DOCUMENTS_REQUIS)
+    required = list(TYPES_DOCUMENTS_REQUIS)
     try:
+        rules = (
+            db.query(PieceRequise)
+            .filter(PieceRequise.actif.is_(True))
+            .order_by(PieceRequise.ordre, PieceRequise.code)
+            .all()
+        )
+        required = [item.code for item in rules if item.obligatoire]
         presents = {
             row[0]
             for row in db.query(DocumentCandidature.type_document)
@@ -413,8 +419,8 @@ def _missing_document_types(db: Session, candidature: Any) -> List[str]:
         }
     except Exception:
         # Ne jamais autoriser un submit si l'inventaire des pièces échoue.
-        return list(TYPES_DOCUMENTS_REQUIS)
-    return [t for t in TYPES_DOCUMENTS_REQUIS if t not in presents]
+        return required
+    return [t for t in required if t not in presents]
 
 
 def _notes_dict_from_candidature(candidature: Any) -> Optional[Dict[str, float]]:
@@ -533,6 +539,21 @@ def patch_ma_candidature(
                 detail=str(exc),
             )
 
+    choix_requis = [
+        value for field, value in cleaned.items()
+        if field in ("choix_1_filiere", "choix_2_filiere") and value is not None
+    ]
+    if choix_requis:
+        programmes_actifs = {
+            row.libelle for row in db.query(ProgrammeConcours)
+            .filter(ProgrammeConcours.actif.is_(True)).all()
+        }
+        if any(value not in programmes_actifs for value in choix_requis):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Cette formation n’est plus proposée. Choisissez une formation active.",
+            )
+
     # Cohérence choix1 != choix2 (en tenant compte de l'état existant)
     choix1 = cleaned.get("choix_1_filiere", getattr(candidature, "choix_1_filiere", None))
     choix2 = cleaned.get("choix_2_filiere", getattr(candidature, "choix_2_filiere", None))
@@ -621,6 +642,18 @@ def submit_ma_candidature(
 
     candidature = _get_candidature_or_404(db, current_user)
 
+    calendrier = db.get(ParametresConcours, 1)
+    if calendrier and calendrier.ouverture_inscriptions and date.today() < calendrier.ouverture_inscriptions:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Les inscriptions ouvrent le {calendrier.ouverture_inscriptions.strftime('%d/%m/%Y')}.",
+        )
+    if calendrier and calendrier.cloture_inscriptions and date.today() > calendrier.cloture_inscriptions:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="La date limite d’inscription est dépassée. Contactez l’administration de l’EMSP.",
+        )
+
     # Le consentement est horodaté : un accord sans date n'est pas un
     # accord. Il est facultatif, mais s'il est donné il doit être daté.
     if body.consentement_tiers:
@@ -651,7 +684,7 @@ def submit_ma_candidature(
             detail=(
                 "Pièces justificatives manquantes : "
                 f"{', '.join(missing_docs)}. "
-                "Veuillez déposer les 10 documents requis."
+                "Veuillez déposer toutes les pièces actuellement exigées par l’école."
             ),
         )
 
@@ -666,6 +699,15 @@ def submit_ma_candidature(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Les deux choix ne peuvent pas être identiques.",
+        )
+    programmes_actifs = {
+        row.libelle for row in db.query(ProgrammeConcours)
+        .filter(ProgrammeConcours.actif.is_(True)).all()
+    }
+    if choix1 not in programmes_actifs or (choix2 and choix2 not in programmes_actifs):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Une formation choisie n’est plus proposée. Modifiez vos choix avant l’envoi.",
         )
 
     candidature.statut = "SUBMITTED"

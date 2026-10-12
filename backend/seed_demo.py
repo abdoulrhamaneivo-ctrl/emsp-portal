@@ -290,12 +290,6 @@ def dossiers_demo() -> list[dict]:
     ]
 
 
-ADMIN_DEMO = {
-    "email": "admin@demo.emsp.ci",
-    "nom": "Scolarité EMSP",
-    "second": "directeur@demo.emsp.ci",
-}
-
 # Les messages de démonstration portent le domaine de démonstration, et
 # non un `@exemple.ci` : ce domaine réservé par la RFC 2606 est
 # indifférenciable d'une adresse réelle, donc un nettoyage ne pouvait pas
@@ -475,21 +469,6 @@ def executer(mot_de_passe: str, reset: bool) -> int:
 
         db.commit()  # libère le verrou d'écriture avant l'appel suivant
 
-        # ─── Comptes d'administration de démonstration ───
-        # (outil dédié : même code que la ligne de commande)
-        from app.admin_cli import creer_admin
-
-        for cle in ("email", "second"):
-            # Ne jamais écraser un compte admin existant ni son mot de passe
-            # lorsque le jeu de démo est lancé sur une base déjà utilisée.
-            if db.query(User).filter(User.email == ADMIN_DEMO[cle]).first() is not None:
-                print(f"  · Compte existant laissé intact : {ADMIN_DEMO[cle]}")
-                continue
-            ok, message = creer_admin(
-                ADMIN_DEMO[cle], mot_de_passe, ADMIN_DEMO["nom"]
-            )
-            print(f"  · {message}")
-
         for nom, email, tel, objet, message in MESSAGES_DEMO:
             exists = db.query(MessageContact).filter(
                 MessageContact.email == email,
@@ -512,8 +491,7 @@ def executer(mot_de_passe: str, reset: bool) -> int:
     print(f"  Candidats   : mot de passe « {mot_de_passe} »")
     for item in dossiers_demo():
         print(f"    {item['email']:<26} {item['note'][:60]}")
-    print(f"\n  Admin       : {ADMIN_DEMO['email']} / {mot_de_passe}")
-    print(f"               {ADMIN_DEMO['second']} / {mot_de_passe}")
+    print("\n  Administration : aucun compte créé ou modifié ; utiliser le compte existant.")
     print("─" * 68)
     return 0
 

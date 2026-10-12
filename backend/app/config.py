@@ -79,12 +79,10 @@ class Settings(BaseSettings):
     CONSENTEMENT_TIERS_REQUIS: bool = True
 
     # ─── Administration ───────────────────────────────────────────────
-    # Compte « super admin » créé automatiquement au démarrage si ces
-    # variables sont renseignées. Sans ces variables, aucun compte admin
-    # n'existe : la création se fait alors via le script app/admin_cli.py.
+    # E-mail du compte ADMIN existant à promouvoir. Sans adresse, le
+    # démarrage ne promeut automatiquement que s'il n'existe qu'un seul
+    # administrateur actif.
     ADMIN_EMAIL: str = ""
-    ADMIN_PASSWORD: str = ""
-    ADMIN_NOM: str = "Administration EMSP"
 
 
 settings = Settings()

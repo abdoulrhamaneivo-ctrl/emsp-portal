@@ -34,7 +34,7 @@ from app.auth import get_current_user
 from app.config import settings
 from app.db import get_db
 from app.demo_downloads import read_or_rebuild_demo_document
-from app.models import DocumentCandidature
+from app.models import Controle, DocumentCandidature, PieceRequise
 from app.rate_limit import check_rate_limit
 from app.storage_service import DocumentStorageService
 
@@ -124,6 +124,13 @@ async def upload_document(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
+    requirement = db.get(PieceRequise, type_document)
+    if requirement is None or not requirement.actif:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cette pièce n’est pas actuellement demandée par l’école.",
+        )
+
     # Le type ``convocation`` est interne : un candidat ne peut pas le déposer.
     if type_document == "convocation":
         raise HTTPException(
@@ -201,6 +208,8 @@ async def upload_document(
             existant.taille = taille
             existant.sha256 = empreinte
             existant.statut = "UPLOADED"
+            # Les constats sur l'ancienne version ne décrivent plus le nouveau fichier.
+            db.query(Controle).filter(Controle.document_id == existant.id).delete(synchronize_session=False)
             db.add(existant)
             db.commit()
             db.refresh(existant)
@@ -244,6 +253,7 @@ async def upload_document(
 def list_documents(
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
+    service: DocumentStorageService = Depends(get_storage_service),
 ):
     """Liste les métadonnées du candidat connecté (jamais de chemin absolu)."""
     rows = (
@@ -252,7 +262,22 @@ def list_documents(
         .order_by(DocumentCandidature.type_document.asc())
         .all()
     )
-    return [_metadata_to_dict(r) for r in rows]
+    result = []
+    missing_changed = False
+    for row in rows:
+        item = _metadata_to_dict(row)
+        try:
+            available = service.file_exists(row.chemin_relatif)
+            item["stockage_disponible"] = available
+            if not available and row.statut != "MISSING":
+                row.statut = "MISSING"
+                missing_changed = True
+        except Exception:
+            item["stockage_disponible"] = None
+        result.append(item)
+    if missing_changed:
+        db.commit()
+    return result
 
 
 # ---------------------------------------------------------------------------

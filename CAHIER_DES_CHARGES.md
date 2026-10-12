@@ -257,8 +257,8 @@ journalisée dans `historique_statut` par l'administration.
 
 ```bash
 # Administration
-python3 -m app.admin_cli create --email admin@emsp.ci --password '…' --nom "Scolarité"
-# (ou ADMIN_EMAIL/ADMIN_PASSWORD/ADMIN_NOM — création automatique au démarrage)
+python3 -m app.admin_cli promote --email admin-existant@emsp.ci
+# (ou ADMIN_EMAIL — promotion automatique au démarrage, sans créer de compte)
 
 # Démonstration : dossiers à tous les stades, avec de vrais PDF
 python3 seed_demo.py [--reset]

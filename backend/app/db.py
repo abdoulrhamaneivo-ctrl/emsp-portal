@@ -19,6 +19,9 @@ def _build_engine():
         # Requis pour l'usage FastAPI (sessions par requête, threads).
         kwargs["connect_args"] = {"check_same_thread": False}
     else:
+        # Une base injoignable ne doit pas bloquer indéfiniment le démarrage
+        # de l'application (Render attend qu'un port soit ouvert).
+        kwargs["connect_args"] = {"connect_timeout": 10}
         # Neon et la plupart des hébergeurs donnent une URL PostgreSQL
         # standard. Choisir explicitement Psycopg 3 évite de dépendre du
         # pilote par défaut de la version de SQLAlchemy installée.
@@ -65,6 +68,10 @@ COLONNES_AJOUTEES = [
     # un consentement sans date n'est pas un consentement.
     ("candidatures", "consentement_tiers", "BOOLEAN NOT NULL DEFAULT 0"),
     ("candidatures", "consentement_le", "DATETIME"),
+    ("candidatures", "convocation_email_sent_at", "DATETIME"),
+    ("candidatures", "convocation_email_started_at", "DATETIME"),
+    ("candidatures", "result_email_sent_at", "DATETIME"),
+    ("candidatures", "result_email_started_at", "DATETIME"),
     # Un administrateur n'a pas de dossier candidat : la colonne doit être
     # nullable. SQLite ne sait pas relâcher une contrainte existante, on
     # reconstruit donc la table si nécessaire (voir _relacher_dossier).
@@ -217,3 +224,52 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
     appliquer_migrations_legeres()
+    _amorcer_catalogues()
+
+
+def _amorcer_catalogues(db: Session | None = None) -> None:
+    """Créer les valeurs initiales dans la session fournie ou dans la base app."""
+    from app.models import ParametresConcours, PieceRequise, ProgrammeConcours
+    from app.schemas import SPECIALITES
+
+    libelles = {
+        "attestation_bac": "Attestation du baccalauréat",
+        "releve_notes_bac": "Relevé de notes du baccalauréat",
+        "piece_identite": "Pièce d’identité",
+        "bulletins_seconde": "Bulletins de seconde",
+        "bulletins_premiere": "Bulletins de première",
+        "bulletins_terminale": "Bulletins de terminale",
+        "photo_identite": "Photo d’identité",
+        "lettre_motivation": "Lettre de motivation",
+        "acte_naissance": "Extrait d’acte de naissance",
+        "cv": "Curriculum vitæ",
+    }
+    descriptions = {
+        "LNUM": "Logistique, transport et entreposage",
+        "FDIG": "Comptabilité, finance d’entreprise et paiements numériques",
+        "MDIG": "Étude de marché, communication et commerce numérique",
+        "DSER": "Conception de services numériques et conduite du changement",
+        "GARE": "Cadre juridique et régulation des activités économiques",
+    }
+    own_session = db is None
+    db = db or SessionLocal()
+    try:
+        for index, label in enumerate(SPECIALITES, 1):
+            code, _, name = label.partition("—")
+            code = code.strip()
+            if db.get(ProgrammeConcours, code) is None:
+                db.add(ProgrammeConcours(
+                    code=code, libelle=label, description=descriptions.get(code),
+                    actif=True, ordre=index,
+                ))
+        for index, (code, label) in enumerate(libelles.items(), 1):
+            if db.get(PieceRequise, code) is None:
+                db.add(PieceRequise(
+                    code=code, libelle=label, obligatoire=True, actif=True, ordre=index,
+                ))
+        if db.get(ParametresConcours, 1) is None:
+            db.add(ParametresConcours(id=1, campagne="Concours EMSP"))
+        db.commit()
+    finally:
+        if own_session:
+            db.close()

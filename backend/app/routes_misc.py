@@ -8,6 +8,7 @@ Ownership strict via current_user (User.numero_dossier -> Candidature).
 from __future__ import annotations
 
 import re
+from datetime import date
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -16,12 +17,51 @@ from sqlalchemy.orm import Session
 
 from app.auth import get_current_user
 from app.db import get_db
-from app.models import Candidature, DocumentCandidature, MessageContact, User
+from app.models import (
+    Candidature, DocumentCandidature, MessageContact, ParametresConcours,
+    PieceRequise, ProgrammeConcours, User,
+)
 from app.pdf_documents import build_convocation_pdf, build_result_certificate_pdf
 from app.rate_limit import check_rate_limit
 from app.routes_documents import get_storage_service
 
 router = APIRouter(tags=["convocation-admission-contact"])
+
+
+@router.get("/api/portail/config")
+def configuration_portail(db: Session = Depends(get_db)) -> dict:
+    """Catalogue et dates publiques, synchronisés avec l'espace super-admin."""
+    programmes = (
+        db.query(ProgrammeConcours).filter(ProgrammeConcours.actif.is_(True))
+        .order_by(ProgrammeConcours.ordre, ProgrammeConcours.code).all()
+    )
+    pieces = (
+        db.query(PieceRequise).filter(PieceRequise.actif.is_(True))
+        .order_by(PieceRequise.ordre, PieceRequise.code).all()
+    )
+    concours = db.get(ParametresConcours, 1)
+    return {
+        "filieres": [
+            {"code": p.code, "libelle": p.libelle, "description": p.description}
+            for p in programmes
+        ],
+        "pieces": [
+            {
+                "code": p.code, "libelle": p.libelle,
+                "description": p.description, "obligatoire": p.obligatoire,
+            }
+            for p in pieces
+        ],
+        "concours": {
+            "campagne": concours.campagne if concours else "Concours EMSP",
+            "ouverture_inscriptions": concours.ouverture_inscriptions.isoformat() if concours and concours.ouverture_inscriptions else None,
+            "cloture_inscriptions": concours.cloture_inscriptions.isoformat() if concours and concours.cloture_inscriptions else None,
+            "date_composition": concours.date_composition.isoformat() if concours and concours.date_composition else None,
+            "heure_composition": concours.heure_composition if concours else None,
+            "centre_composition": concours.centre_composition if concours else None,
+            "publication_resultats": concours.publication_resultats.isoformat() if concours and concours.publication_resultats else None,
+        },
+    }
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _TELEPHONE_RE = re.compile(r"^\+?[0-9\s\-]{8,15}$")
@@ -146,6 +186,12 @@ def get_admission(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    calendrier = db.get(ParametresConcours, 1)
+    if calendrier and calendrier.publication_resultats and date.today() < calendrier.publication_resultats:
+        return {
+            "disponible": False,
+            "message": f"Les résultats seront publiés le {calendrier.publication_resultats.strftime('%d/%m/%Y')}.",
+        }
     candidature = _get_candidature(db, current_user)
     if candidature is None or candidature.admis_concours is None:
         return {"disponible": False, "message": ADMISSION_INDISPONIBLE}
@@ -193,6 +239,9 @@ def download_result_certificate(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    calendrier = db.get(ParametresConcours, 1)
+    if calendrier and calendrier.publication_resultats and date.today() < calendrier.publication_resultats:
+        raise HTTPException(status_code=409, detail="Les résultats ne sont pas encore publiés.")
     candidature = _get_candidature(db, current_user)
     if candidature is None or candidature.admis_concours is None:
         raise HTTPException(status_code=404, detail=ADMISSION_INDISPONIBLE)
@@ -273,6 +322,9 @@ def get_admis_public(
     ),
     limit: int = Query(default=100, ge=1, le=500),
 ):
+    calendrier = db.get(ParametresConcours, 1)
+    if calendrier and calendrier.publication_resultats and date.today() < calendrier.publication_resultats:
+        return {"admis": [], "total": 0, "publication_le": calendrier.publication_resultats.isoformat()}
     q = db.query(Candidature).filter(Candidature.admis_concours.is_(True))
     if filiere:
         q = q.filter(Candidature.filiere_formation == filiere)

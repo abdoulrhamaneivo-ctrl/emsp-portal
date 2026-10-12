@@ -8,6 +8,7 @@ import sys
 def main() -> None:
     user = pwd.getpwnam("agent_emsp")
     storage_root = os.environ.get("DOCUMENT_STORAGE_ROOT", "/app/backend/storage")
+    print(f"[container] préparation du stockage : {storage_root}", flush=True)
     os.makedirs(storage_root, exist_ok=True)
 
     # A Render Persistent Disk can replace the directory created in the image.
@@ -25,6 +26,7 @@ def main() -> None:
     os.environ["HOME"] = user.pw_dir
 
     port = os.environ.get("PORT", "10000")
+    print(f"[container] lancement Uvicorn sur 0.0.0.0:{port}", flush=True)
     os.execvp(
         "uvicorn",
         [

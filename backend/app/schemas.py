@@ -39,13 +39,9 @@ FILIERES = SPECIALITES
 # sous-séries F1/F2 et G2 réellement attendues.
 SERIES_ADMISES = ["A", "B", "C", "D", "F1", "F2", "G2"]
 
-Filiere = Literal[
-    "LNUM — Logistique et Numérique",
-    "FDIG — Finance Digitale",
-    "MDIG — Marketing Digital",
-    "DSER — Digitalisation des Services",
-    "GARE — Gestion des Activités Régulées de l'Économie",
-]
+# La liste est administrable ; les valeurs sont validées côté route contre
+# le catalogue actif en base, plutôt que figées dans ce schéma.
+Filiere = str
 
 Sexe = Literal["Masculin", "Féminin"]
 

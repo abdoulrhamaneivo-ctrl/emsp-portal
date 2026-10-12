@@ -16,7 +16,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app import models  # noqa: F401  (enregistrement des tables)
 from app.config import settings
-from app.db import Base, get_db
+from app.db import Base, _amorcer_catalogues, get_db
 from app.main import app
 from app.rate_limit import clear_rate_limits
 from app.routes_documents import get_storage_service
@@ -93,6 +93,8 @@ def client(tmp_path):
     )
     Base.metadata.create_all(bind=engine)
     TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    with TestingSession() as db:
+        _amorcer_catalogues(db)
 
     def override_db():
         db = TestingSession()
@@ -239,7 +241,7 @@ def test_parcours_candidature_complet(client):
     assert sans_pieces.status_code == 422, sans_pieces.text
     detail_sans_pieces = sans_pieces.json().get("detail", "")
     assert "Pièces justificatives manquantes" in detail_sans_pieces, sans_pieces.text
-    assert "Veuillez déposer les 10 documents requis." in detail_sans_pieces, sans_pieces.text
+    assert "Veuillez déposer toutes les pièces actuellement exigées par l’école." in detail_sans_pieces
     for type_doc in TYPES_PIECES:
         assert type_doc in detail_sans_pieces, (type_doc, detail_sans_pieces)
 
@@ -297,7 +299,7 @@ def test_submit_sans_pieces_422(client):
     assert resp.status_code == 422, resp.text
     detail = resp.json().get("detail", "")
     assert detail.startswith("Pièces justificatives manquantes : "), detail
-    assert detail.endswith("Veuillez déposer les 10 documents requis."), detail
+    assert detail.endswith("Veuillez déposer toutes les pièces actuellement exigées par l’école."), detail
     manquants = [
         t.strip() for t in detail[len("Pièces justificatives manquantes : "):].split(".")[0].split(",")
     ]

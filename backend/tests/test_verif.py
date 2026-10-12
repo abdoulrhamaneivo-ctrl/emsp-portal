@@ -25,7 +25,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app import models  # noqa: F401
 from app.config import settings
-from app.db import Base, get_db
+from app.db import Base, _amorcer_catalogues, get_db
 from app.main import app
 from app.auth import create_session, hash_password
 from app.models import Candidature, Controle, DocumentCandidature, User
@@ -124,6 +124,7 @@ def env(tmp_path, monkeypatch):
     Base.metadata.create_all(bind=engine)
     Session = sessionmaker(bind=engine)
     db = Session()
+    _amorcer_catalogues(db)
     try:
         yield db, tmp_path
     finally:
@@ -545,6 +546,8 @@ def app_temps(tmp_path, monkeypatch):
     )
     Base.metadata.create_all(bind=engine)
     Session = sessionmaker(bind=engine)
+    with Session() as db:
+        _amorcer_catalogues(db)
 
     def override_db():
         s = Session()

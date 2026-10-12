@@ -3,7 +3,7 @@
 import re
 import hashlib
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -28,7 +28,7 @@ from app.email_service import (
     send_password_reset_email,
     send_registration_email,
 )
-from app.models import Candidature, PasswordResetToken, Session as SessionModel, User
+from app.models import Candidature, ParametresConcours, PasswordResetToken, Session as SessionModel, User
 from app.rate_limit import check_rate_limit
 
 router = APIRouter()
@@ -214,6 +214,13 @@ def register(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=TROP_DE_TENTATIVES
         )
 
+    calendrier = db.get(ParametresConcours, 1)
+    today = date.today()
+    if calendrier and calendrier.ouverture_inscriptions and today < calendrier.ouverture_inscriptions:
+        raise HTTPException(status_code=403, detail=f"Les inscriptions ouvrent le {calendrier.ouverture_inscriptions.strftime('%d/%m/%Y')}.")
+    if calendrier and calendrier.cloture_inscriptions and today > calendrier.cloture_inscriptions:
+        raise HTTPException(status_code=403, detail="La période d’inscription au concours est terminée.")
+
     if db.query(User).filter(User.email == data.email).first() is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -350,7 +357,7 @@ def me(current_user: User = Depends(get_current_user), db: Session = Depends(get
             .filter(Candidature.numero_dossier == current_user.numero_dossier)
             .first()
         )
-    if candidature is None and (current_user.role or "").upper() != "ADMIN":
+    if candidature is None and (current_user.role or "").upper() not in {"ADMIN", "SUPER_ADMIN"}:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Dossier de candidature introuvable.",

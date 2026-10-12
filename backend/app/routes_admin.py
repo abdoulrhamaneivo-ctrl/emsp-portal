@@ -1,7 +1,7 @@
 """Administration : accès à l'ensemble des soumissions.
 
 Sécurité — trois règles non négociables :
-1. chaque route exige `require_admin` (rôle ADMIN vérifié côté serveur) ;
+1. chaque route exige `require_admin` ou `require_super_admin` (rôle vérifié côté serveur) ;
 2. la lecture d'une pièce belonging à un candidat est journalisée
    (`ActionAdmin`) : l'administration rend des comptes ;
 3. un compte candidat ne peut jamais atteindre ce module, quel que soit le
@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import hashlib
 import os
-from datetime import date, datetime, timezone
+import re
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
@@ -27,7 +28,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import get_current_user, hash_password
 from app.config import settings
-from app.db import get_db
+from app.db import SessionLocal, get_db
 from app.demo_downloads import read_or_rebuild_demo_document
 from app.models import (
     ActionAdmin,
@@ -35,11 +36,17 @@ from app.models import (
     DocumentCandidature,
     HistoriqueStatut,
     MessageContact,
+    ParametresConcours,
+    PieceRequise,
+    ProgrammeConcours,
     User,
+)
+from app.schemas import SPECIALITES as FILIERES
+from app.email_service import (
+    brevo_is_configured, send_convocation_notification, send_result_notification,
 )
 from app.pdf_documents import build_convocation_pdf, build_result_certificate_pdf
 from app.rate_limit import check_rate_limit
-from app.schemas import SPECIALITES
 from app.storage_service import DocumentStorageService
 
 router = APIRouter(prefix="/api/admin", tags=["administration"])
@@ -77,11 +84,6 @@ TYPES_PIECES = [
     "acte_naissance",
     "cv",
 ]
-# Les cinq spécialités du FS MENUM. Cette liste alimente à la fois la
-# validation du choix du candidat et l'attribution par le jury : si elle
-# reste la liste d'une autre école, les deux sont bloqués.
-FILIERES = SPECIALITES
-
 INTERDIT = "Vous n'êtes pas autorisé à accéder à cette ressource."
 INTROUVABLE = "Dossier introuvable."
 
@@ -97,11 +99,18 @@ def _service() -> DocumentStorageService:
 
 
 def require_admin(current_user: User = Depends(get_current_user)) -> User:
-    """Exige le rôle ADMIN. 403 sinon — jamais 404, on assume le refus."""
+    """Exige un compte ADMIN ou SUPER_ADMIN actif. 403 sinon."""
     role = (getattr(current_user, "role", "CANDIDAT") or "CANDIDAT").upper()
-    if role != "ADMIN" or not getattr(current_user, "actif", True):
+    if role not in {"ADMIN", "SUPER_ADMIN"} or not getattr(current_user, "actif", True):
         raise HTTPException(status_code=403, detail=INTERDIT)
     return current_user
+
+
+def require_super_admin(admin: User = Depends(require_admin)) -> User:
+    """Réserve les réglages globaux et les comptes de privilège au super-admin."""
+    if (admin.role or "").upper() != "SUPER_ADMIN":
+        raise HTTPException(status_code=403, detail="Cette action est réservée au super-administrateur.")
+    return admin
 
 
 def journaliser(
@@ -130,6 +139,56 @@ def journaliser(
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _envoyer_convocations_en_arriere_plan(en_attente: list[tuple[str, str]]) -> None:
+    """Envoie le lot hors requête HTTP et rend chaque échec retentable."""
+    with SessionLocal() as db:
+        for numero, jeton in en_attente:
+            candidature = db.get(Candidature, numero)
+            if candidature is None or candidature.convocation_email_started_at is None:
+                continue
+            if candidature.convocation_email_started_at.isoformat() != jeton:
+                continue  # une nouvelle campagne a remplacé ce lot.
+            succes = False
+            try:
+                if candidature.date_compo and candidature.centre_compo:
+                    succes = send_convocation_notification(
+                        candidature.email, candidature.prenoms or "", candidature.numero_dossier,
+                        candidature.date_compo.strftime("%d/%m/%Y"),
+                        candidature.heure_compo or "", candidature.centre_compo,
+                    )
+            except Exception:
+                succes = False
+            finally:
+                if succes:
+                    candidature.convocation_email_sent_at = _utcnow()
+                candidature.convocation_email_started_at = None
+                db.commit()
+
+
+def _envoyer_resultats_en_arriere_plan(en_attente: list[tuple[str, str]]) -> None:
+    """Notifie les décisions du jury déjà publiables, sans bloquer l'admin."""
+    with SessionLocal() as db:
+        for numero, jeton in en_attente:
+            candidature = db.get(Candidature, numero)
+            if candidature is None or candidature.result_email_started_at is None:
+                continue
+            if candidature.result_email_started_at.isoformat() != jeton:
+                continue
+            succes = False
+            try:
+                if candidature.admis_concours is not None:
+                    succes = send_result_notification(
+                        candidature.email, candidature.prenoms or "", candidature.numero_dossier,
+                    )
+            except Exception:
+                succes = False
+            finally:
+                if succes:
+                    candidature.result_email_sent_at = _utcnow()
+                candidature.result_email_started_at = None
+                db.commit()
 
 
 def _dossier(db: Session, numero: str) -> Candidature:
@@ -170,6 +229,50 @@ class DossierPatch(BaseModel):
 
 class MessageStatut(BaseModel):
     statut: str = Field(..., pattern="^(NOUVEAU|EN_COURS|TRAITE|ARCHIVE)$")
+
+
+class ProgrammeCreate(BaseModel):
+    code: str = Field(..., min_length=2, max_length=16, pattern=r"^[A-Z][A-Z0-9]{1,15}$")
+    libelle: str = Field(..., min_length=3, max_length=160)
+    description: Optional[str] = Field(None, max_length=2000)
+    ordre: int = Field(0, ge=0, le=999)
+
+
+class ProgrammePatch(BaseModel):
+    libelle: Optional[str] = Field(None, min_length=3, max_length=160)
+    description: Optional[str] = Field(None, max_length=2000)
+    ordre: Optional[int] = Field(None, ge=0, le=999)
+    actif: Optional[bool] = None
+
+
+class PieceCreate(BaseModel):
+    code: str = Field(..., min_length=2, max_length=64, pattern=r"^[a-z][a-z0-9_]{1,63}$")
+    libelle: str = Field(..., min_length=3, max_length=160)
+    description: Optional[str] = Field(None, max_length=2000)
+    obligatoire: bool = True
+    ordre: int = Field(0, ge=0, le=999)
+
+
+class PiecePatch(BaseModel):
+    libelle: Optional[str] = Field(None, min_length=3, max_length=160)
+    description: Optional[str] = Field(None, max_length=2000)
+    obligatoire: Optional[bool] = None
+    actif: Optional[bool] = None
+    ordre: Optional[int] = Field(None, ge=0, le=999)
+
+
+class ConcoursPatch(BaseModel):
+    campagne: str = Field(..., min_length=3, max_length=160)
+    ouverture_inscriptions: Optional[date] = None
+    cloture_inscriptions: Optional[date] = None
+    date_composition: Optional[date] = None
+    heure_composition: Optional[str] = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    centre_composition: Optional[str] = Field(None, max_length=255)
+    publication_resultats: Optional[date] = None
+
+
+class BulkConfirmation(BaseModel):
+    confirmation: bool = False
 
 
 # ───────────────────────────── tableau de bord ─────────────────────────────
@@ -221,6 +324,287 @@ def overview(
     }
 
 
+# ─────────────────────── paramètres du super-admin ───────────────────────
+def _date_iso(value):
+    return value.isoformat() if value else None
+
+
+def _configuration_dict(db: Session) -> dict:
+    concours = db.get(ParametresConcours, 1)
+    return {
+        "concours": {
+            "campagne": concours.campagne if concours else "Concours EMSP",
+            "ouverture_inscriptions": _date_iso(concours.ouverture_inscriptions) if concours else None,
+            "cloture_inscriptions": _date_iso(concours.cloture_inscriptions) if concours else None,
+            "date_composition": _date_iso(concours.date_composition) if concours else None,
+            "heure_composition": concours.heure_composition if concours else None,
+            "centre_composition": concours.centre_composition if concours else None,
+            "publication_resultats": _date_iso(concours.publication_resultats) if concours else None,
+        },
+        "filieres": [
+            {"code": p.code, "libelle": p.libelle, "description": p.description, "actif": p.actif, "ordre": p.ordre}
+            for p in db.query(ProgrammeConcours).order_by(ProgrammeConcours.ordre, ProgrammeConcours.code).all()
+        ],
+        "pieces": [
+            {"code": p.code, "libelle": p.libelle, "description": p.description,
+             "obligatoire": p.obligatoire, "actif": p.actif, "ordre": p.ordre}
+            for p in db.query(PieceRequise).order_by(PieceRequise.ordre, PieceRequise.code).all()
+        ],
+    }
+
+
+@router.get("/configuration")
+def lire_configuration(
+    db: Session = Depends(get_db), admin: User = Depends(require_super_admin),
+) -> dict:
+    return _configuration_dict(db)
+
+
+@router.put("/configuration/concours")
+def modifier_configuration_concours(
+    payload: ConcoursPatch,
+    db: Session = Depends(get_db), admin: User = Depends(require_super_admin),
+    request: Request = None,
+) -> dict:
+    if payload.ouverture_inscriptions and payload.cloture_inscriptions and payload.ouverture_inscriptions > payload.cloture_inscriptions:
+        raise HTTPException(status_code=422, detail="La clôture doit être postérieure à l’ouverture des inscriptions.")
+    if payload.date_composition and payload.publication_resultats and payload.publication_resultats < payload.date_composition:
+        raise HTTPException(status_code=422, detail="La publication des résultats ne peut pas précéder le concours.")
+    row = db.get(ParametresConcours, 1)
+    if row is None:
+        row = ParametresConcours(id=1, campagne=payload.campagne)
+        db.add(row)
+    for key, value in payload.model_dump().items():
+        setattr(row, key, value.strip() if isinstance(value, str) else value)
+    row.updated_by = admin.email
+    journaliser(db, admin, "MODIFIE_CALENDRIER_CONCOURS", detail=payload.campagne, request=request)
+    db.commit()
+    return {"message": "Calendrier du concours enregistré.", **_configuration_dict(db)["concours"]}
+
+
+@router.post("/filieres")
+def creer_filiere(
+    payload: ProgrammeCreate, db: Session = Depends(get_db),
+    admin: User = Depends(require_super_admin), request: Request = None,
+) -> dict:
+    code = payload.code.upper()
+    if db.get(ProgrammeConcours, code):
+        raise HTTPException(status_code=409, detail="Ce code de formation existe déjà.")
+    if db.query(ProgrammeConcours).filter(func.lower(ProgrammeConcours.libelle) == payload.libelle.strip().lower()).first():
+        raise HTTPException(status_code=409, detail="Cette formation existe déjà.")
+    row = ProgrammeConcours(code=code, libelle=payload.libelle.strip(), description=(payload.description or "").strip() or None, ordre=payload.ordre, actif=True)
+    db.add(row)
+    journaliser(db, admin, "AJOUTE_FILIERE", detail=code, request=request)
+    db.commit()
+    return {"message": "Formation ajoutée au catalogue.", "filiere": {"code": row.code, "libelle": row.libelle}}
+
+
+@router.patch("/filieres/{code}")
+def modifier_filiere(
+    code: str, payload: ProgrammePatch, db: Session = Depends(get_db),
+    admin: User = Depends(require_super_admin), request: Request = None,
+) -> dict:
+    row = db.get(ProgrammeConcours, code.upper())
+    if row is None:
+        raise HTTPException(status_code=404, detail="Formation introuvable.")
+    data = payload.model_dump(exclude_unset=True)
+    if data.get("libelle") and db.query(ProgrammeConcours).filter(
+        func.lower(ProgrammeConcours.libelle) == data["libelle"].strip().lower(),
+        ProgrammeConcours.code != row.code,
+    ).first():
+        raise HTTPException(status_code=409, detail="Cette formation existe déjà.")
+    nouveau_libelle = data.get("libelle", row.libelle).strip()
+    if nouveau_libelle != row.libelle:
+        for dossier in db.query(Candidature).filter(or_(
+            Candidature.choix_1_filiere == row.libelle,
+            Candidature.choix_2_filiere == row.libelle,
+            Candidature.filiere_formation == row.libelle,
+        )).all():
+            for champ in ("choix_1_filiere", "choix_2_filiere", "filiere_formation"):
+                if getattr(dossier, champ) == row.libelle:
+                    setattr(dossier, champ, nouveau_libelle)
+    for key, value in data.items():
+        setattr(row, key, value.strip() if isinstance(value, str) else value)
+    journaliser(db, admin, "MODIFIE_FILIERE", detail=row.code, request=request)
+    db.commit()
+    return {"message": "Formation mise à jour."}
+
+
+@router.delete("/filieres/{code}")
+def supprimer_filiere(
+    code: str, db: Session = Depends(get_db), admin: User = Depends(require_super_admin),
+    request: Request = None,
+) -> dict:
+    row = db.get(ProgrammeConcours, code.upper())
+    if row is None:
+        raise HTTPException(status_code=404, detail="Formation introuvable.")
+    utilisee = db.query(Candidature.numero_dossier).filter(or_(
+        Candidature.choix_1_filiere == row.libelle,
+        Candidature.choix_2_filiere == row.libelle,
+        Candidature.filiere_formation == row.libelle,
+    )).first()
+    row.actif = False  # archivage logique : conserve les références et l'historique.
+    journaliser(db, admin, "RETIRE_FILIERE", detail=f"{row.code} ({'utilisée' if utilisee else 'non référencée'})", request=request)
+    db.commit()
+    return {"message": "Formation archivée. Les dossiers existants conservent leur libellé historique ; elle peut être réactivée."}
+
+
+@router.post("/pieces")
+def creer_piece_requise(
+    payload: PieceCreate, db: Session = Depends(get_db),
+    admin: User = Depends(require_super_admin), request: Request = None,
+) -> dict:
+    if payload.code == "convocation":
+        raise HTTPException(status_code=422, detail="Le type « convocation » est réservé aux documents officiels générés par l’administration.")
+    if db.get(PieceRequise, payload.code):
+        raise HTTPException(status_code=409, detail="Ce type de pièce existe déjà.")
+    row = PieceRequise(
+        code=payload.code, libelle=payload.libelle.strip(),
+        description=(payload.description or "").strip() or None,
+        obligatoire=payload.obligatoire, actif=True, ordre=payload.ordre,
+    )
+    db.add(row)
+    journaliser(db, admin, "AJOUTE_PIECE_REQUISE", detail=payload.code, request=request)
+    db.commit()
+    return {"message": "Pièce ajoutée aux pièces à fournir."}
+
+
+@router.patch("/pieces/{code}")
+def modifier_piece_requise(
+    code: str, payload: PiecePatch, db: Session = Depends(get_db),
+    admin: User = Depends(require_super_admin), request: Request = None,
+) -> dict:
+    row = db.get(PieceRequise, code)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Pièce introuvable.")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(row, key, value.strip() if isinstance(value, str) else value)
+    journaliser(db, admin, "MODIFIE_PIECE_REQUISE", detail=code, request=request)
+    db.commit()
+    return {"message": "Règle de dépôt mise à jour."}
+
+
+@router.delete("/pieces/{code}")
+def supprimer_piece_requise(
+    code: str, db: Session = Depends(get_db), admin: User = Depends(require_super_admin),
+    request: Request = None,
+) -> dict:
+    row = db.get(PieceRequise, code)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Pièce introuvable.")
+    # Archivage doux : la pièce ne sera plus demandée, mais son historique reste lisible.
+    row.actif = False
+    journaliser(db, admin, "ARCHIVE_PIECE_REQUISE", detail=code, request=request)
+    db.commit()
+    return {"message": "Pièce archivée. Les documents déjà déposés restent conservés."}
+
+
+@router.get("/campagne/apercu")
+def apercu_campagne(
+    db: Session = Depends(get_db), admin: User = Depends(require_super_admin),
+) -> dict:
+    concours = db.get(ParametresConcours, 1)
+    convocations_query = db.query(func.count(Candidature.numero_dossier)).filter(
+        Candidature.statut.in_(("SUBMITTED", "UNDER_REVIEW", "VALIDATED", "RETAINED", "COMPOSITION_SCHEDULED")),
+    )
+    calendrier_complet = bool(concours and concours.date_composition and concours.centre_composition)
+    if calendrier_complet:
+        convocations_query = convocations_query.filter(or_(
+            Candidature.date_compo.is_(None), Candidature.date_compo != concours.date_composition,
+            Candidature.heure_compo != concours.heure_composition,
+            Candidature.centre_compo != concours.centre_composition,
+            Candidature.convocation_email_sent_at.is_(None),
+        ))
+    convocations = convocations_query.scalar() or 0
+    resultats = db.query(func.count(Candidature.numero_dossier)).filter(
+        Candidature.admis_concours.is_not(None), Candidature.result_email_sent_at.is_(None),
+    ).scalar() or 0
+    return {"convocations_a_programmer": convocations, "resultats_a_notifier": resultats,
+            "calendrier_complet": calendrier_complet, "brevo_configure": brevo_is_configured()}
+
+
+@router.post("/campagne/convocations")
+def programmer_convocations(
+    background_tasks: BackgroundTasks, payload: BulkConfirmation, db: Session = Depends(get_db),
+    admin: User = Depends(require_super_admin), request: Request = None,
+) -> dict:
+    if not payload.confirmation:
+        raise HTTPException(status_code=422, detail="Confirmez explicitement l’envoi groupé.")
+    concours = db.get(ParametresConcours, 1)
+    if not concours or not concours.date_composition or not concours.centre_composition:
+        raise HTTPException(status_code=409, detail="Enregistrez d’abord la date et le centre du concours.")
+    candidates = db.query(Candidature).filter(
+        Candidature.statut.in_(("SUBMITTED", "UNDER_REVIEW", "VALIDATED", "RETAINED", "COMPOSITION_SCHEDULED")),
+    ).order_by(Candidature.numero_dossier).all()
+    changed = 0
+    for c in candidates:
+        if c.date_compo != concours.date_composition or c.heure_compo != concours.heure_composition or c.centre_compo != concours.centre_composition:
+            c.date_compo = concours.date_composition
+            c.heure_compo = concours.heure_composition
+            c.centre_compo = concours.centre_composition
+            c.convocation_email_sent_at = None
+            c.convocation_email_started_at = None
+            if c.statut != "COMPOSITION_SCHEDULED":
+                ancien = c.statut
+                c.statut = "COMPOSITION_SCHEDULED"
+                db.add(HistoriqueStatut(
+                    numero_dossier=c.numero_dossier, ancien_statut=ancien,
+                    nouveau_statut=c.statut, commentaire="Convocation programmée en campagne",
+                    par_admin=admin.email,
+                ))
+            changed += 1
+    db.flush()
+    en_attente: list[tuple[str, str]] = []
+    if brevo_is_configured():
+        maintenant = _utcnow()
+        seuil_reprise = maintenant - timedelta(minutes=30)
+        for index, c in enumerate(candidates):
+            if c.convocation_email_sent_at:
+                continue
+            if c.convocation_email_started_at and c.convocation_email_started_at >= seuil_reprise:
+                continue
+            jeton = maintenant + timedelta(microseconds=index + 1)
+            c.convocation_email_started_at = jeton
+            en_attente.append((c.numero_dossier, jeton.isoformat()))
+    journaliser(db, admin, "CAMPAGNE_CONVOCATIONS", detail=f"{changed} programmée(s), {len(en_attente)} notification(s) en file", request=request)
+    db.commit()
+    if en_attente:
+        background_tasks.add_task(_envoyer_convocations_en_arriere_plan, en_attente)
+    return {"message": f"{changed} dossier(s) programmés. {len(en_attente)} notification(s) mise(s) en file d’envoi.", "programmes": changed, "emails_queued": len(en_attente), "brevo_configure": brevo_is_configured()}
+
+
+@router.post("/campagne/resultats/notifier")
+def notifier_resultats_publies(
+    background_tasks: BackgroundTasks, payload: BulkConfirmation, db: Session = Depends(get_db),
+    admin: User = Depends(require_super_admin), request: Request = None,
+) -> dict:
+    if not payload.confirmation:
+        raise HTTPException(status_code=422, detail="Confirmez explicitement l’envoi groupé.")
+    if not brevo_is_configured():
+        raise HTTPException(status_code=503, detail="Brevo n’est pas configuré : aucun résultat n’a été notifié.")
+    calendrier = db.get(ParametresConcours, 1)
+    if calendrier and calendrier.publication_resultats and date.today() < calendrier.publication_resultats:
+        raise HTTPException(status_code=409, detail=f"La publication est prévue le {calendrier.publication_resultats.strftime('%d/%m/%Y')}.")
+    # Seules les décisions humaines déjà écrites par le jury peuvent être notifiées.
+    candidates = db.query(Candidature).filter(
+        Candidature.admis_concours.is_not(None), Candidature.result_email_sent_at.is_(None),
+    ).order_by(Candidature.numero_dossier).all()
+    maintenant = _utcnow()
+    seuil_reprise = maintenant - timedelta(minutes=30)
+    en_attente: list[tuple[str, str]] = []
+    for index, c in enumerate(candidates):
+        if c.result_email_started_at and c.result_email_started_at >= seuil_reprise:
+            continue
+        jeton = maintenant + timedelta(microseconds=index + 1)
+        c.result_email_started_at = jeton
+        en_attente.append((c.numero_dossier, jeton.isoformat()))
+    journaliser(db, admin, "NOTIFIE_RESULTATS", detail=f"{len(en_attente)} notification(s) mise(s) en file", request=request)
+    db.commit()
+    if en_attente:
+        background_tasks.add_task(_envoyer_resultats_en_arriere_plan, en_attente)
+    return {"message": f"{len(en_attente)} notification(s) de résultat mise(s) en file d’envoi.", "emails_queued": len(en_attente)}
+
+
 # ───────────────────────────── liste des dossiers ─────────────────────────────
 @router.get("/candidatures")
 def lister_candidatures(
@@ -256,13 +640,15 @@ def lister_candidatures(
 
     resultats = []
     for c in rows:
-        pieces = [
-            d.type_document
-            for d in db.query(DocumentCandidature)
-            .filter(DocumentCandidature.numero_dossier == c.numero_dossier)
-            .all()
-        ]
-        manquantes = [t for t in TYPES_PIECES if t not in pieces]
+        exigences = db.query(PieceRequise).filter(
+            PieceRequise.actif.is_(True), PieceRequise.obligatoire.is_(True),
+        ).all()
+        required_codes = [p.code for p in exigences]
+        pieces = {
+            d.type_document for d in db.query(DocumentCandidature)
+            .filter(DocumentCandidature.numero_dossier == c.numero_dossier).all()
+        }
+        manquantes = [t for t in required_codes if t not in pieces]
         resultats.append(
             {
                 "numero_dossier": c.numero_dossier,
@@ -276,8 +662,8 @@ def lister_candidatures(
                 "choix_2_filiere": c.choix_2_filiere,
                 "moyenne_bac": c.moyenne_bac,
                 "annee_bac": c.annee_bac,
-                "pieces_deposees": len(TYPES_PIECES) - len(manquantes),
-                "pieces_total": len(TYPES_PIECES),
+                "pieces_deposees": len(required_codes) - len(manquantes),
+                "pieces_total": len(required_codes),
                 "pieces_manquantes": manquantes,
                 "soumis_le": c.submitted_at.isoformat() if c.submitted_at else None,
                 "mis_a_jour_le": c.updated_at.isoformat() if c.updated_at else None,
@@ -288,7 +674,8 @@ def lister_candidatures(
         "limite": limite,
         "decalage": decalage,
         "resultats": resultats,
-        "filieres": FILIERES,
+        "filieres": [p.libelle for p in db.query(ProgrammeConcours).filter(
+            ProgrammeConcours.actif.is_(True)).order_by(ProgrammeConcours.ordre).all()],
         "statuts": [{"code": k, "label": v} for k, v in STATUT_LABELS.items()],
     }
 
@@ -305,23 +692,40 @@ def detail_candidature(
     journaliser(db, admin, "CONSULTE_DOSSIER", c.numero_dossier, request=request)
     db.commit()
 
-    documents = [
-        {
+    storage = _service()
+    documents = []
+    for d in db.query(DocumentCandidature).filter(
+        DocumentCandidature.numero_dossier == c.numero_dossier
+    ).order_by(DocumentCandidature.type_document).all():
+        try:
+            storage_available = storage.file_exists(d.chemin_relatif)
+        except (FileNotFoundError, ValueError):
+            storage_available = False
+        except Exception:
+            storage_available = None
+        if storage_available is False:
+            d.statut = "MISSING"
+        documents.append({
             "id": d.id,
             "type_document": d.type_document,
             "nom_original": d.nom_original,
             "mime_type": d.mime_type,
             "taille": d.taille,
             "statut": d.statut,
+            "stockage_disponible": storage_available,
+            "reparation": "Le candidat peut déposer une nouvelle version depuis son espace." if storage_available is False else None,
             "depose_le": d.created_at.isoformat() if d.created_at else None,
             "url": f"/api/admin/documents/{d.id}/download",
-        }
-        for d in db.query(DocumentCandidature)
-        .filter(DocumentCandidature.numero_dossier == c.numero_dossier)
-        .order_by(DocumentCandidature.type_document)
-        .all()
-    ]
-    types_deposes = {d["type_document"] for d in documents}
+        })
+    if any(d["stockage_disponible"] is False for d in documents):
+        db.commit()
+    pieces_requises = db.query(PieceRequise).filter(PieceRequise.actif.is_(True)).order_by(
+        PieceRequise.ordre, PieceRequise.code,
+    ).all()
+    required_codes = [p.code for p in pieces_requises if p.obligatoire]
+    types_deposes = {
+        d["type_document"] for d in documents if d["stockage_disponible"] is not False
+    }
     historique = [
         {
             "ancien_statut": h.ancien_statut,
@@ -399,10 +803,15 @@ def detail_candidature(
             "soumis_le": c.submitted_at.isoformat() if c.submitted_at else None,
         },
         "documents": documents,
-        "pieces_manquantes": [t for t in TYPES_PIECES if t not in types_deposes],
+        "pieces_manquantes": [t for t in required_codes if t not in types_deposes],
+        "pieces_requises": [
+            {"code": p.code, "libelle": p.libelle, "obligatoire": p.obligatoire}
+            for p in pieces_requises
+        ],
         "verification": rapport_verif.resume(db, c),
         "historique": historique,
-        "filieres": FILIERES,
+        "filieres": [p.libelle for p in db.query(ProgrammeConcours).filter(
+            ProgrammeConcours.actif.is_(True)).order_by(ProgrammeConcours.ordre).all()],
         "statuts": [{"code": k, "label": v} for k, v in STATUT_LABELS.items()],
     }
 
@@ -432,8 +841,11 @@ def modifier_candidature(
             ),
         )
 
-    if "filiere_formation" in data and data["filiere_formation"] not in (None, *FILIERES):
-        raise HTTPException(status_code=422, detail="Filière inconnue.")
+    if "filiere_formation" in data and data["filiere_formation"] is not None:
+        active_programs = {p.libelle for p in db.query(ProgrammeConcours).filter(ProgrammeConcours.actif.is_(True)).all()}
+        if data["filiere_formation"] not in active_programs:
+            raise HTTPException(status_code=422, detail="Filière inconnue ou inactive.")
+    ancienne_convocation = (c.date_compo, c.heure_compo, c.centre_compo)
     if "date_compo" in data and data["date_compo"] is None:
         c.date_compo = None
     elif data.get("date_compo") is not None:
@@ -453,6 +865,10 @@ def modifier_candidature(
     ):
         if champ in data:
             setattr(c, champ, data[champ])
+
+    if ancienne_convocation != (c.date_compo, c.heure_compo, c.centre_compo):
+        c.convocation_email_sent_at = None
+        c.convocation_email_started_at = None
 
     # Une convocation porte le dossier en « composition programmée ».
     if c.date_compo and c.centre_compo and c.statut in (
@@ -514,6 +930,15 @@ def changer_statut(
         c.admis_concours = True
     elif nouveau in ("REJECTED",):
         c.admis_concours = False
+    else:
+        c.admis_concours = None
+        c.result_email_sent_at = None
+        c.result_email_started_at = None
+    if nouveau in {"ADMITTED", "REJECTED"}:
+        # Si le jury corrige ensuite sa décision, la nouvelle notification
+        # doit pouvoir être envoyée explicitement depuis la campagne.
+        c.result_email_sent_at = None
+        c.result_email_started_at = None
 
     db.add(
         HistoriqueStatut(
@@ -766,7 +1191,7 @@ def maj_message(
 # ───────────────────────────── gestion des comptes ─────────────────────────────
 @router.get("/comptes")
 def lister_comptes(
-    db: Session = Depends(get_db), admin: User = Depends(require_admin)
+    db: Session = Depends(get_db), admin: User = Depends(require_super_admin)
 ) -> dict:
     rows = db.query(User).order_by(User.created_at.desc()).limit(500).all()
     return {
@@ -789,7 +1214,7 @@ def lister_comptes(
 def creer_admin(
     payload: dict,
     db: Session = Depends(get_db),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_super_admin),
 ) -> dict:
     """Crée un compte administrateur (usage interne, protégé par le rôle)."""
     email = str(payload.get("email", "")).strip().lower()

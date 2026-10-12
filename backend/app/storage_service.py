@@ -72,6 +72,7 @@ MIME_PAR_EXTENSION: dict[str, str] = {
 }
 
 _NUMERO_RE = re.compile(r"^CDT_[0-9]{4}$")
+_TYPE_DOC_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 
 
 class DocumentStorageService:
@@ -133,8 +134,11 @@ class DocumentStorageService:
         return numero
 
     def _safe_type(self, type_doc: str) -> str:
-        """Valide le type de document contre l'allowlist (inclut convocation)."""
-        if not isinstance(type_doc, str) or type_doc not in TYPES_STOCKABLES:
+        """Valide une clé de document ; l'API limite les dépôts au catalogue actif."""
+        if (
+            not isinstance(type_doc, str)
+            or (type_doc not in TYPES_STOCKABLES and not _TYPE_DOC_RE.fullmatch(type_doc))
+        ):
             raise ValueError("Type de document invalide.")
         return type_doc
 
@@ -163,7 +167,7 @@ class DocumentStorageService:
             or len(morceaux) != 4
             or morceaux[0] != "candidats"
             or not _NUMERO_RE.fullmatch(morceaux[1])
-            or morceaux[2] not in TYPES_STOCKABLES
+            or (morceaux[2] not in TYPES_STOCKABLES and not _TYPE_DOC_RE.fullmatch(morceaux[2]))
             or not re.fullmatch(r"[0-9a-f]{32}\.(pdf|jpg|jpeg|png)", morceaux[3])
         ):
             raise ValueError("Chemin de fichier invalide.")

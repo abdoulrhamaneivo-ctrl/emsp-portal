@@ -194,6 +194,44 @@
     bulletins_terminale: "Bulletins de terminale", photo_identite: "Photo d’identité", lettre_motivation: "Lettre de motivation",
     acte_naissance: "Extrait d’acte de naissance", cv: "Curriculum vitæ"
   };
+  let portalConfig = { filieres: [], pieces: [], concours: {} };
+  function applyPortalConfig(config) {
+    portalConfig = config || portalConfig;
+    const filieres = portalConfig.filieres || [];
+    ["choix_1_filiere", "choix_2_filiere", "decision-filiere"].forEach((id) => {
+      const select = document.getElementById(id);
+      if (!select || !filieres.length) return;
+      const previous = select.value;
+      select.innerHTML = `<option value="">Choisir une formation</option>${filieres.map((item) => `<option value="${escapeHtml(item.libelle)}">${escapeHtml(item.libelle)}</option>`).join("")}`;
+      if (filieres.some((item) => item.libelle === previous)) select.value = previous;
+    });
+    const requirements = portalConfig.pieces || [];
+    requirements.forEach((piece) => { docLabels[piece.code] = piece.libelle; });
+    $$('[data-document-list]').forEach((list) => {
+      if (!requirements.length) return;
+      list.innerHTML = requirements.map((piece) => `<article class="upload-card" data-document-card="${escapeHtml(piece.code)}" data-document-required="${piece.obligatoire ? "true" : "false"}"><div class="upload-card-info"><span class="upload-card-check" data-document-check aria-hidden="true">○</span><div><h3>${escapeHtml(piece.libelle)}${piece.obligatoire ? "" : ' <span class="optional-label">Facultatif</span>'}</h3><p data-document-status>${escapeHtml(piece.description || (piece.obligatoire ? "À déposer · PDF, JPG ou PNG · 5 Mo maximum" : "Pièce facultative · PDF, JPG ou PNG · 5 Mo maximum"))}</p></div></div><div class="upload-card-actions"><a data-document-download hidden></a><label class="btn btn-outline upload-button"><span data-upload-label>Choisir un fichier</span><input type="file" data-document-input="${escapeHtml(piece.code)}" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" hidden /></label><button class="text-button" type="button" data-document-delete="${escapeHtml(piece.code)}" hidden>Retirer</button></div></article>`).join("");
+    });
+    const docs = $(`[data-public-documents]`);
+    if (docs) docs.innerHTML = requirements.map((piece) => `<li>${escapeHtml(piece.libelle)}${piece.obligatoire ? "" : " · facultatif"}</li>`).join("") || "<li>Aucune pièce configurée pour le moment.</li>";
+    const programs = $(`[data-public-programs]`);
+    if (programs && filieres.length) programs.innerHTML = filieres.map((item) => `<article class="condition-specialty"><span>${escapeHtml(item.code)}</span><div><h3>${escapeHtml(item.libelle.replace(/^\S+\s+—\s+/, ""))}</h3><p>${escapeHtml(item.description || "Formation proposée au concours EMSP.")}</p></div></article>`).join("");
+    const calendar = portalConfig.concours || {};
+    const campaign = $(`[data-public-campaign]`);
+    if (campaign && calendar.campagne) campaign.textContent = calendar.campagne;
+    const dates = $(`[data-public-dates]`);
+    if (dates) {
+      const entries = [
+        ["Ouverture des inscriptions", calendar.ouverture_inscriptions],
+        ["Clôture des inscriptions", calendar.cloture_inscriptions],
+        ["Concours", calendar.date_composition ? `${dateFr(calendar.date_composition)}${calendar.heure_composition ? ` · ${calendar.heure_composition}` : ""}` : null],
+        ["Publication des résultats", calendar.publication_resultats],
+      ].filter(([, value]) => value);
+      dates.innerHTML = entries.length ? entries.map(([label, value]) => `<span><strong>${escapeHtml(label)}</strong><br />${escapeHtml(typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? dateFr(value) : value)}</span>`).join("") : "<span>Le calendrier officiel sera publié par l’administration.</span>";
+    }
+    return portalConfig;
+  }
+  const refreshPortalConfig = () => api("/api/portail/config").then(applyPortalConfig).catch(() => portalConfig);
+  const portalConfigPromise = refreshPortalConfig();
   const steps = ["Informations personnelles", "Parcours académique", "Choix de formation", "Tuteurs", "Pièces justificatives", "Vérification", "Soumission"];
 
   const parallaxTargets = $$('[data-parallax]');
@@ -289,7 +327,7 @@
     try {
       const result = await api("/api/auth/login", { method: "POST", body: JSON.stringify({ identifiant: loginForm.elements.identifiant.value, password: loginForm.elements.password.value }) });
       const next = new URLSearchParams(location.search).get("next");
-      navigateTo(next && next.startsWith("/") && !next.startsWith("//") ? next : result.role === "ADMIN" ? "/admin.html" : "/espace-candidat.html");
+      navigateTo(next && next.startsWith("/") && !next.startsWith("//") ? next : ["ADMIN", "SUPER_ADMIN"].includes(result.role) ? "/admin.html" : "/espace-candidat.html");
     } catch (error) { showFeedback(feedback, error.message, "error"); }
     finally { button.disabled = false; }
   });
@@ -384,9 +422,11 @@
   });
 
   async function fetchDocuments() {
+    await portalConfigPromise;
     const documents = await api("/api/candidature/documents");
     // La convocation est un document officiel séparé, pas une pièce à fournir.
-    return documents.filter((document) => Object.hasOwn(docLabels, document.type_document));
+    const activeCodes = new Set((portalConfig.pieces || []).map((piece) => piece.code));
+    return documents.filter((document) => activeCodes.has(document.type_document));
   }
   function updateDocumentCards(documents, feedbackSelector = "[data-documents-feedback]") {
     const byType = new Map(documents.map((doc) => [doc.type_document, doc]));
@@ -397,21 +437,32 @@
       const check = $(`[data-document-check]`, card);
       const download = $(`[data-document-download]`, card);
       const remove = $(`[data-document-delete]`, card);
-      card.classList.toggle("is-uploaded", Boolean(doc));
-      if (status) status.textContent = doc ? `${doc.nom_original} · déposé le ${dateFr(doc.created_at, { dateStyle: "medium" })}` : "À déposer · PDF, JPG ou PNG · 5 Mo maximum";
-      if (check) { check.textContent = doc ? "✓" : "○"; check.setAttribute("aria-label", doc ? "Pièce déposée" : "Pièce manquante"); }
-      if (download) { download.hidden = !doc; download.href = doc ? `/api/candidature/documents/${doc.id}/download` : "#"; download.textContent = "Télécharger"; }
+      const missing = doc?.stockage_disponible === false;
+      card.classList.toggle("is-uploaded", Boolean(doc) && !missing);
+      card.classList.toggle("is-storage-missing", missing);
+      if (status) status.textContent = missing ? "Le fichier enregistré est introuvable. Déposez une nouvelle version pour réparer la pièce." : doc ? `${doc.nom_original} · déposé le ${dateFr(doc.created_at, { dateStyle: "medium" })}` : `${card.dataset.documentRequired === "true" ? "À déposer" : "Facultatif"} · PDF, JPG ou PNG · 5 Mo maximum`;
+      if (check) { check.textContent = missing ? "!" : doc ? "✓" : "○"; check.setAttribute("aria-label", missing ? "Fichier manquant, redéposez cette pièce" : doc ? "Pièce déposée" : "Pièce manquante"); }
+      if (download) { download.hidden = !doc || missing; download.href = doc && !missing ? `/api/candidature/documents/${doc.id}/download` : "#"; download.textContent = "Télécharger"; }
       if (remove) { remove.hidden = !doc; remove.dataset.documentId = doc?.id || ""; }
+      const uploadLabel = $(`[data-upload-label]`, card);
+      if (uploadLabel) uploadLabel.textContent = missing ? "Réparer la pièce" : doc ? "Remplacer le fichier" : "Choisir un fichier";
     });
-    const count = documents.length;
+    const requiredCards = $$('[data-document-card][data-document-required="true"]');
+    const count = requiredCards.filter((card) => {
+      const doc = byType.get(card.dataset.documentCard);
+      return Boolean(doc && doc.stockage_disponible !== false);
+    }).length;
+    const total = requiredCards.length || (portalConfig.pieces || []).filter((piece) => piece.obligatoire).length;
     const progress = $("[data-documents-progress]");
     if (progress) progress.textContent = String(count);
+    const totalElement = $("[data-documents-total]");
+    if (totalElement) totalElement.textContent = String(total);
     const bar = $("[data-documents-progress-bar]");
-    if (bar) bar.style.width = `${count * 10}%`;
+    if (bar) bar.style.width = `${total ? count / total * 100 : 0}%`;
     const reviewCount = $("[data-review-documents]");
-    if (reviewCount) reviewCount.innerHTML = `<div class="review-row"><strong>Pièces justificatives</strong><span>${count} sur 10 déposées</span><button type="button" class="text-button" data-jump-step="5">Modifier</button></div>`;
+    if (reviewCount) reviewCount.innerHTML = `<div class="review-row"><strong>Pièces justificatives</strong><span>${count} sur ${total} requises déposées</span><button type="button" class="text-button" data-jump-step="5">Modifier</button></div>`;
     const readiness = $("[data-submit-readiness]");
-    if (readiness) readiness.textContent = count === 10 ? "Vos dix pièces sont déposées. Vous pouvez transmettre votre dossier après vérification." : `Il vous reste ${10 - count} pièce${10 - count > 1 ? "s" : ""} à déposer avant la soumission.`;
+    if (readiness) readiness.textContent = count >= total ? "Toutes les pièces obligatoires sont déposées. Vous pouvez transmettre votre dossier après vérification." : `Il vous reste ${total - count} pièce${total - count > 1 ? "s" : ""} à déposer avant la soumission.`;
   }
   async function loadDocuments() {
     const docs = await fetchDocuments();
@@ -548,7 +599,13 @@
     const percent = Math.round(((status.etape_courante || 1) / 7) * 100);
     animateCounter($(`[data-dashboard-progress]`, dashboard), percent, "%"); $(`[data-dashboard-progress-bar]`, dashboard).style.width = `${percent}%`;
     $(`[data-dashboard-stage]`, dashboard).textContent = `Étape ${status.etape_courante || 1} sur 7 · ${steps[(status.etape_courante || 1) - 1]}`;
-    $(`[data-dashboard-number]`, dashboard).textContent = app.numero_dossier; animateCounter($(`[data-dashboard-documents]`, dashboard), docs.length); $(`[data-dashboard-step]`, dashboard).textContent = `${status.etape_courante || 1} / 7`;
+    $(`[data-dashboard-number]`, dashboard).textContent = app.numero_dossier;
+    const requiredCodes = new Set((portalConfig.pieces || []).filter((piece) => piece.obligatoire).map((piece) => piece.code));
+    const requiredTotal = requiredCodes.size;
+    const requiredUploaded = docs.filter((doc) => requiredCodes.has(doc.type_document) && doc.stockage_disponible !== false).length;
+    animateCounter($(`[data-dashboard-documents]`, dashboard), requiredUploaded);
+    const docsTotal = $(`[data-dashboard-documents-total]`, dashboard); if (docsTotal) docsTotal.textContent = String(requiredTotal);
+    $(`[data-dashboard-step]`, dashboard).textContent = `${status.etape_courante || 1} / 7`;
     if (status.statut !== "DRAFT") {
       const applicationCard = $('[data-portal-view="dashboard"] .dashboard-card[href="/candidature.html"]', dashboard);
       if (applicationCard) {
@@ -586,14 +643,14 @@
 
   const profile = $('[data-portal-view="profile"]');
   if (profile) api("/api/me").then(async (me) => {
-    const app = me.role === "ADMIN" ? null : await api("/api/candidature").catch(() => null);
+    const app = ["ADMIN", "SUPER_ADMIN"].includes(me.role) ? null : await api("/api/candidature").catch(() => null);
     const display = app && `${app.prenoms || ""} ${app.nom || ""}`.trim() || me.nom_affiche || me.email;
     $(`[data-profile-name]`, profile).textContent = display; $(`[data-profile-email]`, profile).textContent = me.email;
-    $(`[data-profile-role]`, profile).textContent = me.role === "ADMIN" ? "Administration" : "Candidat";
+    $(`[data-profile-role]`, profile).textContent = ["ADMIN", "SUPER_ADMIN"].includes(me.role) ? "Administration" : "Candidat";
     if (me.numero_dossier) $(`[data-profile-dossier]`, profile).textContent = me.numero_dossier; else $(`[data-profile-dossier-row]`, profile).hidden = true;
     $(`[data-profile-initials]`, profile).textContent = display.split(/\s+/).slice(0, 2).map((s) => s[0]).join("").toUpperCase();
     const consentPanel = $(`[data-profile-ai-consent]`, profile);
-    if (me.role !== "ADMIN" && consentPanel && app) {
+    if (!["ADMIN", "SUPER_ADMIN"].includes(me.role) && consentPanel && app) {
       consentPanel.hidden = false;
       try {
         const consent = await api("/api/candidature/consentement-ia");
@@ -743,10 +800,15 @@
       pagination.innerHTML = `<button type="button" data-page-back ${offset <= 0 ? "disabled" : ""}>← Précédent</button><span>${data.total ? offset + 1 : 0}–${Math.min(offset + data.resultats.length, data.total)} sur ${data.total}</span><button type="button" data-page-next ${offset + limit >= data.total ? "disabled" : ""}>Suivant →</button>`;
     }
     async function openDossier(numero) {
+      await portalConfigPromise;
       selectedDossier = numero; const result = await api(`/api/admin/candidatures/${encodeURIComponent(numero)}`); const d = result.dossier;
       const panel = $(`[data-admin-detail]`, admin); panel.hidden = false; $(`[data-detail-title]`, panel).textContent = `${d.numero_dossier} · ${d.prenoms || ""} ${d.nom || ""}`;
       $(`[data-detail-summary]`, panel).innerHTML = [["Identité", `${d.prenoms || ""} ${d.nom || ""}`, d.email, d.telephone, d.date_naissance, d.lieu_naissance, d.nationalite, d.nature_piece, d.numero_piece, d.adresse], ["Baccalauréat", d.annee_bac, d.serie_bac, d.numero_bac, d.numero_table, d.mention, d.moyenne_bac], ["Choix", d.choix_1_filiere, d.choix_2_filiere], ["Tuteur principal", d.tuteur1?.nom, d.tuteur1?.contact, d.tuteur1?.lien, d.tuteur1?.residence], ["Second tuteur", d.tuteur2?.nom, d.tuteur2?.contact, d.tuteur2?.lien, d.tuteur2?.residence]].map(([title, ...values]) => `<section><h3>${escapeHtml(title)}</h3><p>${values.filter(Boolean).map(escapeHtml).join(" · ") || "—"}</p></section>`).join("");
-      $(`[data-detail-documents]`, panel).innerHTML = `<h3>Pièces déposées (${result.documents.length}/10)</h3><ul>${result.documents.map((doc) => `<li><a href="${escapeHtml(doc.url)}">${escapeHtml(doc.nom_original || doc.type_document)} ↓</a><small>${escapeHtml(doc.type_document)} · ${dateFr(doc.depose_le, { dateStyle: "medium" })}</small></li>`).join("") || "<li>Aucune pièce déposée.</li>"}</ul>`;
+      const labels = Object.fromEntries((result.pieces_requises || []).map((piece) => [piece.code, piece.libelle]));
+      const damaged = result.documents.filter((doc) => doc.stockage_disponible === false);
+      const availableCount = result.documents.filter((doc) => doc.stockage_disponible !== false).length;
+      const requiredCount = (result.pieces_requises || []).filter((piece) => piece.obligatoire).length;
+      $(`[data-detail-documents]`, panel).innerHTML = `<h3>Pièces déposées (${availableCount}/${requiredCount} requises)</h3>${damaged.length ? `<p class="storage-repair-notice"><strong>${damaged.length} fichier(s) introuvable(s) dans le stockage.</strong> Le candidat peut redéposer ces pièces depuis son espace ; le nouvel envoi remplacera automatiquement la référence manquante.</p>` : ""}<ul>${result.documents.map((doc) => `<li class="${doc.stockage_disponible === false ? "is-storage-missing" : ""}">${doc.stockage_disponible === false ? `<strong>${escapeHtml(labels[doc.type_document] || doc.type_document)} · fichier absent</strong>` : `<a href="${escapeHtml(doc.url)}">${escapeHtml(doc.nom_original || labels[doc.type_document] || doc.type_document)} ↓</a>`}<small>${escapeHtml(labels[doc.type_document] || doc.type_document)} · ${dateFr(doc.depose_le, { dateStyle: "medium" })}${doc.stockage_disponible === false ? " · à redéposer" : ""}</small></li>`).join("") || "<li>Aucune pièce déposée.</li>"}</ul>`;
       renderVerification(result.verification, panel);
       const convocationDownload = $(`[data-admin-convocation-download]`, panel);
       convocationDownload.hidden = !d.date_compo || !d.centre_compo;
@@ -765,13 +827,62 @@
       const data = await api("/api/admin/comptes");
       $(`[data-admin-accounts]`, admin).innerHTML = data.comptes.length ? data.comptes.map((u) => `<article><span class="admin-avatar">${escapeHtml((u.nom_affiche || u.email).slice(0, 2).toUpperCase())}</span><div><strong>${escapeHtml(u.nom_affiche || u.email)}</strong><small>${escapeHtml(u.email)} · ${escapeHtml(u.role)} · ${u.actif ? "Actif" : "Désactivé"}</small></div></article>`).join("") : '<p class="empty-state">Aucun compte.</p>';
     }
+    const isSuperAdmin = admin.dataset.adminRole === "SUPER_ADMIN";
+    function renderCatalog(target, items, kind) {
+      const list = $(`[data-${target}]`, admin);
+      if (!list) return;
+      list.innerHTML = items.length ? items.map((item) => `<form class="admin-catalog-row" data-catalog-row="${kind}" data-code="${escapeHtml(item.code)}"><div class="admin-catalog-row-heading"><code>${escapeHtml(item.code)}</code><label><span>Actif</span><input type="checkbox" name="actif" ${item.actif ? "checked" : ""} /></label></div><div class="field"><label>Nom affiché</label><input name="libelle" required maxlength="160" value="${escapeHtml(item.libelle)}" /></div><div class="field"><label>${kind === "piece" ? "Consigne au candidat" : "Description"}</label><textarea name="description" rows="2">${escapeHtml(item.description || "")}</textarea></div>${kind === "piece" ? `<label class="check-card"><input type="checkbox" name="obligatoire" ${item.obligatoire ? "checked" : ""} /><span><strong>Obligatoire</strong></span></label>` : `<div class="field"><label>Ordre d’affichage</label><input type="number" name="ordre" min="0" max="999" value="${Number(item.ordre || 0)}" /></div>`}<div class="inline-actions"><button class="btn btn-outline" type="submit">Enregistrer</button><button class="text-button" type="button" data-catalog-remove>Archiver</button></div></form>`).join("") : '<p class="empty-state">Aucune entrée configurée.</p>';
+      list.querySelectorAll("[data-catalog-row]").forEach((form) => form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const data = { libelle: form.elements.libelle.value.trim(), description: form.elements.description.value.trim() || null, actif: form.elements.actif.checked };
+        if (kind === "piece") data.obligatoire = form.elements.obligatoire.checked;
+        else data.ordre = Number(form.elements.ordre.value || 0);
+        const button = $(`[type=submit]`, form); button.disabled = true;
+        try {
+          const collection = kind === "piece" ? "pieces" : "filieres";
+          const result = await api(`/api/admin/${collection}/${encodeURIComponent(form.dataset.code)}`, { method: "PATCH", body: JSON.stringify(data) });
+          showFeedback(feedback, result.message, "success"); await loadConfiguration();
+        } catch (error) { showFeedback(feedback, error.message, "error"); }
+        finally { button.disabled = false; }
+      }));
+      list.querySelectorAll("[data-catalog-remove]").forEach((button) => button.addEventListener("click", async () => {
+        const form = button.closest("[data-catalog-row]");
+        if (!window.confirm(`Archiver « ${form.elements.libelle.value} » ? Les dossiers et documents déjà déposés seront conservés.`)) return;
+        button.disabled = true;
+        try {
+          const collection = kind === "piece" ? "pieces" : "filieres";
+          const result = await api(`/api/admin/${collection}/${encodeURIComponent(form.dataset.code)}`, { method: "DELETE" });
+          showFeedback(feedback, result.message, "success"); await loadConfiguration();
+        } catch (error) { showFeedback(feedback, error.message, "error"); button.disabled = false; }
+      }));
+    }
+    async function loadCampaignPreview() {
+      if (!isSuperAdmin) return;
+      const preview = await api("/api/admin/campagne/apercu");
+      const target = $(`[data-campaign-preview]`, admin);
+      if (target) target.textContent = `${preview.convocations_a_programmer} dossier(s) à convoquer · ${preview.resultats_a_notifier} résultat(s) décidé(s) restant à notifier · Brevo ${preview.brevo_configure ? "connecté" : "non configuré"}${preview.calendrier_complet ? "." : " · enregistrez d’abord la date et le centre du concours."}`;
+      const sendConvocations = $(`[data-send-convocations]`, admin);
+      if (sendConvocations) sendConvocations.disabled = !preview.calendrier_complet || !preview.convocations_a_programmer;
+      const notifyResults = $(`[data-notify-results]`, admin);
+      if (notifyResults) notifyResults.disabled = !preview.brevo_configure || !preview.resultats_a_notifier;
+    }
+    async function loadConfiguration() {
+      if (!isSuperAdmin) return;
+      const data = await api("/api/admin/configuration");
+      await refreshPortalConfig();
+      const form = $(`[data-admin-calendar]`, admin);
+      if (form) Object.entries(data.concours || {}).forEach(([key, value]) => { if (form.elements[key]) form.elements[key].value = value || ""; });
+      renderCatalog("program-list", data.filieres || [], "programme");
+      renderCatalog("requirement-list", data.pieces || [], "piece");
+      await loadCampaignPreview();
+    }
     loadOverview().catch((error) => showFeedback(feedback, error.message, "error"));
     $(`[data-admin-refresh]`, admin)?.addEventListener("click", () => loadOverview().catch((error) => showFeedback(feedback, error.message, "error")));
     $$('[data-admin-tab]', admin).forEach((tab) => tab.addEventListener("click", async () => {
       $$('[data-admin-tab]', admin).forEach((t) => t.classList.toggle("is-active", t === tab));
       $$('[data-admin-panel]', admin).forEach((panel) => panel.hidden = panel.dataset.adminPanel !== tab.dataset.adminTab);
       hideFeedback(feedback);
-      try { if (tab.dataset.adminTab === "applications") await loadApplications(); if (tab.dataset.adminTab === "messages") await loadMessages(); if (tab.dataset.adminTab === "accounts") await loadAccounts(); }
+      try { if (tab.dataset.adminTab === "applications") await loadApplications(); if (tab.dataset.adminTab === "messages") await loadMessages(); if (tab.dataset.adminTab === "accounts") await loadAccounts(); if (tab.dataset.adminTab === "configuration") await loadConfiguration(); }
       catch (error) { showFeedback(feedback, error.message, "error"); }
     }));
     $$('[data-admin-shortcut]', admin).forEach((shortcut) => shortcut.addEventListener("click", () => {
@@ -780,6 +891,9 @@
     }));
     if (new URLSearchParams(location.search).get("section") === "applications") {
       $('[data-admin-tab="applications"]', admin)?.click();
+    }
+    if (new URLSearchParams(location.search).get("section") === "configuration" && isSuperAdmin) {
+      $('[data-admin-tab="configuration"]', admin)?.click();
     }
     $(`[data-admin-filter]`, admin)?.addEventListener("submit", (event) => { event.preventDefault(); offset = 0; loadApplications().catch((error) => showFeedback(feedback, error.message, "error")); });
     admin.addEventListener("click", (event) => {
@@ -836,6 +950,44 @@
     $(`[data-create-admin]`, admin)?.addEventListener("submit", async (event) => {
       event.preventDefault(); const form = event.currentTarget; const button = $("[type=submit]", form); button.disabled = true;
       try { const result = await api("/api/admin/comptes/admin", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(form))) }); showFeedback(feedback, result.message, "success"); form.reset(); await loadAccounts(); }
+      catch (error) { showFeedback(feedback, error.message, "error"); }
+      finally { button.disabled = false; }
+    });
+    $(`[data-admin-calendar]`, admin)?.addEventListener("submit", async (event) => {
+      event.preventDefault(); const form = event.currentTarget; const button = $(`[type=submit]`, form); button.disabled = true;
+      const data = Object.fromEntries(new FormData(form));
+      ["ouverture_inscriptions", "cloture_inscriptions", "date_composition", "heure_composition", "centre_composition", "publication_resultats"].forEach((key) => { data[key] = data[key]?.trim() || null; });
+      try { const result = await api("/api/admin/configuration/concours", { method: "PUT", body: JSON.stringify(data) }); showFeedback(feedback, result.message, "success"); await loadConfiguration(); }
+      catch (error) { showFeedback(feedback, error.message, "error"); }
+      finally { button.disabled = false; }
+    });
+    $(`[data-create-program]`, admin)?.addEventListener("submit", async (event) => {
+      event.preventDefault(); const form = event.currentTarget; const button = $(`[type=submit]`, form); button.disabled = true;
+      const data = Object.fromEntries(new FormData(form)); data.code = data.code.trim().toUpperCase();
+      try { const result = await api("/api/admin/filieres", { method: "POST", body: JSON.stringify(data) }); showFeedback(feedback, result.message, "success"); form.reset(); await loadConfiguration(); }
+      catch (error) { showFeedback(feedback, error.message, "error"); }
+      finally { button.disabled = false; }
+    });
+    $(`[data-create-requirement]`, admin)?.addEventListener("submit", async (event) => {
+      event.preventDefault(); const form = event.currentTarget; const button = $(`[type=submit]`, form); button.disabled = true;
+      const data = Object.fromEntries(new FormData(form)); data.obligatoire = form.elements.obligatoire.checked; data.code = data.code.trim().toLowerCase();
+      try { const result = await api("/api/admin/pieces", { method: "POST", body: JSON.stringify(data) }); showFeedback(feedback, result.message, "success"); form.reset(); await loadConfiguration(); }
+      catch (error) { showFeedback(feedback, error.message, "error"); }
+      finally { button.disabled = false; }
+    });
+    $(`[data-send-convocations]`, admin)?.addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      if (!window.confirm("Programmer les candidats soumis avec le calendrier enregistré et envoyer les convocations par e-mail ?")) return;
+      button.disabled = true;
+      try { const result = await api("/api/admin/campagne/convocations", { method: "POST", body: JSON.stringify({ confirmation: true }) }); const note = result.brevo_configure ? `${result.emails_queued} e-mail(s) sont envoyés en arrière-plan.` : "Brevo n’est pas configuré : les dates sont appliquées, aucun e-mail n’a été envoyé."; showFeedback(feedback, `${result.message} ${note}`, result.brevo_configure ? "success" : "error"); await loadOverview(); await loadCampaignPreview(); }
+      catch (error) { showFeedback(feedback, error.message, "error"); }
+      finally { button.disabled = false; }
+    });
+    $(`[data-notify-results]`, admin)?.addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      if (!window.confirm("Envoyer un e-mail aux candidats dont la décision du jury est déjà enregistrée ? Aucune décision ne sera créée ou modifiée.")) return;
+      button.disabled = true;
+      try { const result = await api("/api/admin/campagne/resultats/notifier", { method: "POST", body: JSON.stringify({ confirmation: true }) }); showFeedback(feedback, result.message, "success"); await loadCampaignPreview(); }
       catch (error) { showFeedback(feedback, error.message, "error"); }
       finally { button.disabled = false; }
     });

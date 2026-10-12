@@ -112,32 +112,46 @@ le monogramme ne sert que de repli. Favicon + apple-touch-icon sur les 14 pages.
 
 ## Administration
 
-Le super admin gère **toutes** les soumissions. Le lien « Administration » n'apparaît
-que pour lui, et le serveur refuse tout le reste.
+Deux rôles séparent le traitement des dossiers des réglages de la campagne :
+`ADMIN` traite les candidatures, les pièces, les convocations et les messages ;
+`SUPER_ADMIN` dispose en plus du calendrier global, des catalogues de formations et
+de pièces, des envois groupés et de la gestion des comptes. Chaque action est vérifiée
+côté serveur et inscrite au journal d'administration.
 
 ```bash
 cd backend
-python3 -m app.admin_cli create --email admin@emsp.ci --password '…' --nom "Scolarité"
+python3 -m app.admin_cli promote --email admin-existant@emsp.ci
 python3 -m app.admin_cli list          # lister les comptes
 ```
 
-Variables d'environnement équivalentes (création automatique au démarrage) :
-`ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_NOM` — sans elles, aucun compte privilégié
-n'existe.
+Au démarrage, `ADMIN_EMAIL` désigne le compte administrateur existant à promouvoir
+en `SUPER_ADMIN` ; son mot de passe, son adresse et son compte sont conservés. Si
+la variable est vide, la promotion automatique n'a lieu que lorsqu'un seul compte
+administrateur actif existe. S'il y en a plusieurs, indiquez l'adresse exacte dans
+les variables Render. Le bootstrap ne crée aucun compte et ne réinitialise aucun
+mot de passe. La création d'un administrateur depuis l'interface crée un rôle
+`ADMIN`, jamais un nouveau super-administrateur.
 
-Ce que fait l'administration : vue d'ensemble (compteurs), liste filtrable de tous les
-dossiers, fiche complète (identité, bac, notes, tuteurs, 10 pièces), décision du jury
-(statut, filière, date et centre de composition, notes d'admission, note interne),
-dépôt de la convocation officielle, messagerie, comptes, et **journal des actions**.
+L'espace super-admin gère les dates d'inscription, du concours et de publication des
+résultats ; les formations et pièces à fournir sont stockées en base et reflétées sur
+le parcours public et les formulaires. L'envoi de convocations applique date, heure et
+centre aux dossiers soumis, puis met les e-mails Brevo en arrière-plan. L'envoi des
+résultats ne concerne que les décisions déjà enregistrées par le jury. Les documents
+introuvables dans le stockage sont signalés dans la fiche du dossier ; le candidat peut
+redéposer le fichier, ce qui remplace la référence et invalide les anciens constats de
+contrôle liés à cette pièce.
 
 Sécurité : rôle vérifié côté serveur sur chaque route (403 pour un candidat, 401 anonyme),
 téléchargement de pièce toujours journalisé, aucune donnée d'administration renvoyée
 au candidat.
 
-Routes : `GET /api/admin/overview`, `GET /api/admin/candidatures`,
+Routes principales : `GET /api/admin/overview`, `GET /api/admin/candidatures`,
 `GET|PATCH /api/admin/candidatures/{n}`, `POST /api/admin/candidatures/{n}/statut`,
 `GET /api/admin/documents/{id}/download`, `POST /api/admin/candidatures/{n}/convocation`,
-`GET /api/admin/messages`, `GET /api/admin/comptes`.
+`GET /api/admin/messages`. Réglages super-admin : `/api/admin/configuration`,
+`/api/admin/filieres`, `/api/admin/pieces`, `/api/admin/campagne/apercu`,
+`/api/admin/campagne/convocations`, `/api/admin/campagne/resultats/notifier`,
+`GET /api/admin/comptes`.
 
 ```
 Anonyme : Accueil · Conditions · Candidater · Contact

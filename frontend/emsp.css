@@ -1494,3 +1494,37 @@ h1, h2, h3, h4 { line-height: 1.12; }
 @media (max-width: 760px) {
   .admin-public-links { align-items: flex-start; flex-direction: column; gap: 2px; }
 }
+
+.admin-configuration > .card, .admin-configuration > .admin-catalog-grid { margin-top: 18px; }
+[data-admin-role="SUPER_ADMIN"] .admin-shortcuts { grid-template-columns: repeat(4,minmax(0,1fr)); }
+.admin-bulk-actions { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 16px 24px; }
+.admin-bulk-actions h3, .admin-catalog-grid h3 { margin: 4px 0 8px; }
+.admin-bulk-actions p, .admin-bulk-actions small { color: var(--emsp-muted); line-height: 1.65; }
+.admin-bulk-actions small { grid-column: 1 / -1; }
+.admin-catalog-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 18px; align-items: start; }
+.admin-catalog-grid > .card { min-width: 0; }
+.admin-catalog-list { display: grid; gap: 12px; margin-top: 22px; }
+.admin-catalog-row { display: grid; gap: 12px; padding: 15px; border: 1px solid var(--emsp-line); background: var(--emsp-surface-raised, var(--emsp-surface)); }
+.admin-catalog-row-heading { display: flex; justify-content: space-between; align-items: center; color: var(--emsp-muted); }
+.admin-catalog-row-heading code { color: var(--emsp-green-ink); font-weight: 800; }
+.admin-catalog-row-heading label { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; }
+.admin-catalog-row .field { margin: 0; }
+.admin-catalog-row textarea { min-height: 64px; }
+.storage-repair-notice { margin: 12px 0; padding: 12px 14px; border-left: 3px solid #bd8e10; background: rgba(255,220,0,.1); color: var(--emsp-text); line-height: 1.6; }
+.detail-documents li.is-storage-missing { padding: 10px; border-left: 3px solid #bd8e10; background: rgba(255,220,0,.07); }
+.detail-documents li.is-storage-missing > strong { color: #805f07; }
+.conditions-flow > span { min-width: 0; }
+:root[data-theme="dark"] .admin-catalog-row { background: #14231a; }
+:root[data-theme="dark"] .admin-catalog-row-heading code { color: #c5ebd0; }
+:root[data-theme="dark"] .storage-repair-notice,
+:root[data-theme="dark"] .detail-documents li.is-storage-missing { background: rgba(255,220,0,.09); }
+:root[data-theme="dark"] .detail-documents li.is-storage-missing > strong { color: #ffe89a; }
+@media (max-width: 900px) {
+  [data-admin-role="SUPER_ADMIN"] .admin-shortcuts { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .admin-catalog-grid { grid-template-columns: 1fr; }
+  .admin-bulk-actions { grid-template-columns: 1fr; }
+  .admin-bulk-actions small { grid-column: auto; }
+}
+@media (max-width: 560px) {
+  [data-admin-role="SUPER_ADMIN"] .admin-shortcuts { grid-template-columns: 1fr; }
+}

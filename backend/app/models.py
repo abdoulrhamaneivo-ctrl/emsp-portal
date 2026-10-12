@@ -88,6 +88,10 @@ class Candidature(Base):
     note_psycho_compo: Mapped[float | None] = mapped_column(Float, nullable=True)
     admis_concours: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     filiere_formation: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    convocation_email_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    convocation_email_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    result_email_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    result_email_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -133,7 +137,7 @@ class User(Base):
         nullable=True,
         index=True,
     )
-    # CANDIDAT : accès à son seul dossier. ADMIN : accès à toutes les soumissions.
+    # CANDIDAT : accès à son seul dossier. ADMIN : jury/service. SUPER_ADMIN : paramètres globaux.
     role: Mapped[str] = mapped_column(String(16), nullable=False, default="CANDIDAT", index=True)
     nom_affiche: Mapped[str | None] = mapped_column(String(255), nullable=True)
     actif: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -303,3 +307,49 @@ class Controle(Base):
     __table_args__ = (
         Index("ix_controles_dossier_controle", "numero_dossier", "controle"),
     )
+
+
+class ProgrammeConcours(Base):
+    """Catalogue administrable des formations proposées aux candidats."""
+
+    __tablename__ = "programmes_concours"
+
+    code: Mapped[str] = mapped_column(String(16), primary_key=True)
+    libelle: Mapped[str] = mapped_column(String(160), nullable=False, unique=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    actif: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    ordre: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
+class PieceRequise(Base):
+    """Règle centrale de dépôt des justificatifs (historique conservé)."""
+
+    __tablename__ = "pieces_requises"
+
+    code: Mapped[str] = mapped_column(String(64), primary_key=True)
+    libelle: Mapped[str] = mapped_column(String(160), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    obligatoire: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    actif: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    ordre: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
+class ParametresConcours(Base):
+    """Dates et lieu de référence visibles par tout le portail."""
+
+    __tablename__ = "parametres_concours"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    campagne: Mapped[str] = mapped_column(String(160), nullable=False, default="Concours EMSP")
+    ouverture_inscriptions: Mapped[Date | None] = mapped_column(Date, nullable=True)
+    cloture_inscriptions: Mapped[Date | None] = mapped_column(Date, nullable=True)
+    date_composition: Mapped[Date | None] = mapped_column(Date, nullable=True)
+    heure_composition: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    centre_composition: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    publication_resultats: Mapped[Date | None] = mapped_column(Date, nullable=True)
+    updated_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)
