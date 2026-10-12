@@ -258,7 +258,10 @@ def list_documents(
     """Liste les métadonnées du candidat connecté (jamais de chemin absolu)."""
     rows = (
         db.query(DocumentCandidature)
-        .filter(DocumentCandidature.numero_dossier == current_user.numero_dossier)
+        .filter(
+            DocumentCandidature.numero_dossier == current_user.numero_dossier,
+            DocumentCandidature.type_document != "convocation",
+        )
         .order_by(DocumentCandidature.type_document.asc())
         .all()
     )
@@ -293,6 +296,11 @@ def download_document(
     """Télécharge une pièce (ownership stricte, ``Content-Disposition: attachment``)."""
     doc = db.get(DocumentCandidature, doc_id)
     _require_owned(doc, current_user.numero_dossier)
+    if doc.type_document == "convocation":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="La convocation est disponible dans la rubrique Convocation après sa publication collective.",
+        )
 
     try:
         content = read_or_rebuild_demo_document(db, doc, service)
@@ -324,6 +332,11 @@ def delete_document(
     """Supprime une pièce (fichier FS + ligne BDD)."""
     doc = db.get(DocumentCandidature, doc_id)
     _require_owned(doc, current_user.numero_dossier)
+    if doc.type_document == "convocation":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Une convocation officielle ne peut pas être supprimée depuis l’espace candidat.",
+        )
 
     try:
         service.delete_file(doc.chemin_relatif)

@@ -9,21 +9,20 @@ from __future__ import annotations
 
 import re
 from datetime import date
-from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_user
+from app.campaign import candidature_dans_cohorte, deliberation_complete
 from app.db import get_db
 from app.models import (
-    Candidature, DocumentCandidature, MessageContact, ParametresConcours,
+    Candidature, MessageContact, ParametresConcours,
     PieceRequise, ProgrammeConcours, User,
 )
 from app.pdf_documents import build_convocation_pdf, build_result_certificate_pdf
 from app.rate_limit import check_rate_limit
-from app.routes_documents import get_storage_service
 
 router = APIRouter(tags=["convocation-admission-contact"])
 
@@ -60,6 +59,8 @@ def configuration_portail(db: Session = Depends(get_db)) -> dict:
             "heure_composition": concours.heure_composition if concours else None,
             "centre_composition": concours.centre_composition if concours else None,
             "publication_resultats": concours.publication_resultats.isoformat() if concours and concours.publication_resultats else None,
+            "convocations_publiees": bool(concours and concours.convocations_publiees_le),
+            "resultats_publies": bool(concours and concours.resultats_publies_le),
         },
     }
 
@@ -90,18 +91,6 @@ def _get_candidature(db: Session, user: User) -> Candidature | None:
     )
 
 
-def _get_convocation_doc(db: Session, numero_dossier: str) -> DocumentCandidature | None:
-    """Document convocation du dossier, ou None (metadata type == convocation)."""
-    return (
-        db.query(DocumentCandidature)
-        .filter(
-            DocumentCandidature.numero_dossier == numero_dossier,
-            DocumentCandidature.type_document == "convocation",
-        )
-        .first()
-    )
-
-
 def _masquer_numero_dossier(numero: str | None) -> str:
     s = str(numero or "")
     if len(s) <= 4:
@@ -118,20 +107,26 @@ def get_convocation(
     db: Session = Depends(get_db),
 ):
     candidature = _get_candidature(db, current_user)
+    calendrier = db.get(ParametresConcours, 1)
     if (
         candidature is None
-        or not candidature.date_compo
-        or not candidature.centre_compo
+        or not candidature_dans_cohorte(candidature)
+        or not calendrier
+        or not calendrier.convocations_publiees_le
+        or not calendrier.date_composition
+        or not calendrier.centre_composition
     ):
         return {"disponible": False, "message": CONVOCATION_INDISPONIBLE}
 
     payload: dict = {
         "disponible": True,
         "numero_dossier": candidature.numero_dossier,
-        "date_compo": candidature.date_compo.isoformat(),
-        "heure_compo": candidature.heure_compo,
-        "centre_compo": candidature.centre_compo,
+        "date_compo": calendrier.date_composition.isoformat(),
+        "heure_compo": calendrier.heure_composition,
+        "centre_compo": calendrier.centre_composition,
         "convocation_url": "/api/candidature/convocation/download",
+        "publication_collective": True,
+        "convocations_publiees_le": calendrier.convocations_publiees_le.isoformat(),
     }
     return payload
 
@@ -145,30 +140,24 @@ def download_convocation(
     db: Session = Depends(get_db),
 ):
     candidature = _get_candidature(db, current_user)
+    calendrier = db.get(ParametresConcours, 1)
     if (
         candidature is None
-        or not candidature.date_compo
-        or not candidature.centre_compo
+        or not candidature_dans_cohorte(candidature)
+        or not calendrier
+        or not calendrier.convocations_publiees_le
+        or not calendrier.date_composition
+        or not calendrier.centre_composition
     ):
         raise HTTPException(status_code=404, detail=CONVOCATION_INDISPONIBLE)
 
-    # Ownership strict : on ne cherche que parmi les documents du dossier du user.
-    doc = _get_convocation_doc(db, candidature.numero_dossier)
-    is_demo = str(candidature.email or "").lower().endswith("@demo.emsp.ci")
-    if doc is not None and not is_demo:
-        try:
-            content = get_storage_service().read_file(doc.chemin_relatif)
-            return Response(
-                content=content,
-                media_type=doc.mime_type or "application/pdf",
-                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(doc.nom_original or 'convocation.pdf', safe='')}"},
-            )
-        except FileNotFoundError:
-            pass
-        except Exception as exc:
-            raise HTTPException(status_code=503, detail="La convocation est momentanément inaccessible. Réessayez plus tard.") from exc
-
-    pdf = build_convocation_pdf(candidature)
+    # Le PDF reste nominatif, mais reprend exclusivement le calendrier commun.
+    pdf = build_convocation_pdf(
+        candidature,
+        date_compo=calendrier.date_composition,
+        heure_compo=calendrier.heure_composition,
+        centre_compo=calendrier.centre_composition,
+    )
     return Response(
         content=pdf,
         media_type="application/pdf",
@@ -187,10 +176,22 @@ def get_admission(
     db: Session = Depends(get_db),
 ):
     calendrier = db.get(ParametresConcours, 1)
-    if calendrier and calendrier.publication_resultats and date.today() < calendrier.publication_resultats:
+    complete, _, en_attente = deliberation_complete(db)
+    if (
+        not calendrier
+        or not calendrier.resultats_publies_le
+        or not complete
+        or (calendrier.publication_resultats and date.today() < calendrier.publication_resultats)
+    ):
+        if calendrier and calendrier.publication_resultats and date.today() < calendrier.publication_resultats:
+            message = f"Les résultats seront publiés collectivement le {calendrier.publication_resultats.strftime('%d/%m/%Y')}."
+        elif en_attente:
+            message = f"Les résultats seront publiés ensemble après la délibération de tous les dossiers ({en_attente} décision(s) restante(s))."
+        else:
+            message = "La délibération est terminée. Votre résultat n’est pas encore disponible : l’administration doit déclencher la publication collective."
         return {
             "disponible": False,
-            "message": f"Les résultats seront publiés le {calendrier.publication_resultats.strftime('%d/%m/%Y')}.",
+            "message": message,
         }
     candidature = _get_candidature(db, current_user)
     if candidature is None or candidature.admis_concours is None:
@@ -207,7 +208,7 @@ def get_admission(
             "nom": candidature.nom,
             "numero_dossier": candidature.numero_dossier,
             "filiere_formation": candidature.filiere_formation,
-            "date_decision": candidature.reviewed_at.isoformat() if candidature.reviewed_at else None,
+            "date_publication": calendrier.publication_resultats.isoformat(),
             "notes": _notes_resultat(candidature),
             "certificat_url": "/api/candidature/admission/certificat.pdf",
         }
@@ -218,7 +219,7 @@ def get_admission(
         "prenoms": candidature.prenoms,
         "nom": candidature.nom,
         "numero_dossier": candidature.numero_dossier,
-        "date_decision": candidature.reviewed_at.isoformat() if candidature.reviewed_at else None,
+        "date_publication": calendrier.publication_resultats.isoformat(),
         "notes": _notes_resultat(candidature),
         "certificat_url": "/api/candidature/admission/certificat.pdf",
     }
@@ -240,13 +241,22 @@ def download_result_certificate(
     db: Session = Depends(get_db),
 ):
     calendrier = db.get(ParametresConcours, 1)
-    if calendrier and calendrier.publication_resultats and date.today() < calendrier.publication_resultats:
+    complete, _, _ = deliberation_complete(db)
+    if (
+        not calendrier
+        or not calendrier.resultats_publies_le
+        or not complete
+        or (calendrier.publication_resultats and date.today() < calendrier.publication_resultats)
+    ):
         raise HTTPException(status_code=409, detail="Les résultats ne sont pas encore publiés.")
     candidature = _get_candidature(db, current_user)
     if candidature is None or candidature.admis_concours is None:
         raise HTTPException(status_code=404, detail=ADMISSION_INDISPONIBLE)
 
-    pdf = build_result_certificate_pdf(candidature)
+    pdf = build_result_certificate_pdf(
+        candidature,
+        date_publication=calendrier.publication_resultats if calendrier else None,
+    )
     return Response(
         content=pdf,
         media_type="application/pdf",
@@ -323,8 +333,19 @@ def get_admis_public(
     limit: int = Query(default=100, ge=1, le=500),
 ):
     calendrier = db.get(ParametresConcours, 1)
-    if calendrier and calendrier.publication_resultats and date.today() < calendrier.publication_resultats:
-        return {"admis": [], "total": 0, "publication_le": calendrier.publication_resultats.isoformat()}
+    complete, _, _ = deliberation_complete(db)
+    if (
+        not calendrier
+        or not calendrier.resultats_publies_le
+        or not complete
+        or (calendrier.publication_resultats and date.today() < calendrier.publication_resultats)
+    ):
+        return {
+            "admis": [],
+            "total": 0,
+            "publication_le": calendrier.publication_resultats.isoformat()
+            if calendrier and calendrier.publication_resultats else None,
+        }
     q = db.query(Candidature).filter(Candidature.admis_concours.is_(True))
     if filiere:
         q = q.filter(Candidature.filiere_formation == filiere)

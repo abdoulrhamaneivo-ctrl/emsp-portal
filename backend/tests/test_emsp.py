@@ -188,6 +188,30 @@ def test_health_verifie_la_connexion_a_la_base(client):
     assert response.json() == {"status": "ok"}
 
 
+def test_migration_ajoute_les_marqueurs_de_publication_collective(tmp_path, monkeypatch):
+    """Une ancienne base reçoit les colonnes de campagne sans réinitialisation."""
+    from sqlalchemy import inspect, text
+    from app import db as appdb
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'ancienne.db'}")
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE parametres_concours (id INTEGER PRIMARY KEY, campagne VARCHAR(160))"
+        ))
+        conn.execute(text(
+            "CREATE TABLE candidatures (choix_1_filiere VARCHAR(120), choix_2_filiere VARCHAR(120), "
+            "filiere_formation VARCHAR(120), serie_bac VARCHAR(20))"
+        ))
+    monkeypatch.setattr(appdb, "engine", engine)
+
+    appdb.appliquer_migrations_legeres()
+
+    colonnes = {column["name"] for column in inspect(engine).get_columns("parametres_concours")}
+    assert "convocations_publiees_le" in colonnes
+    assert "resultats_publies_le" in colonnes
+    engine.dispose()
+
+
 def upload_pieces(client, types=None):
     """Téléverse une pièce PDF synthétique par type via POST /documents."""
     for type_doc in types if types is not None else TYPES_PIECES:
@@ -763,28 +787,38 @@ def test_admin_voit_toutes_les_soumissions(client, tmp_path, monkeypatch):
 
 
 def test_admin_decide_et_le_candidat_voit_le_statut(client, tmp_path):
-    """Décision du jury : statut, historique, et reflux côté candidat."""
+    """Convocations et résultats sortent en campagne pour toute la cohorte."""
     register(client, email="candidat2@example.com")
     client.post("/api/auth/logout")
+    register(client, email="candidat3@example.com")
+    client.post("/api/auth/logout")
     _creer_admin(tmp_path / "test.db")
+    db, gen = _open_db()
+    try:
+        admin = db.query(models.User).filter_by(email="scolarite@emsp.ci").first()
+        admin.role = "SUPER_ADMIN"
+        db.commit()
+    finally:
+        _close_db(gen)
 
+    clear_rate_limits()
     client.post(
         "/api/auth/login", json={"email": "scolarite@emsp.ci", "password": "adminmotdepasse1"}
     )
-    out = client.post(
-        "/api/admin/candidatures/CDT_0001/statut",
-        json={"statut": "UNDER_REVIEW", "commentaire": "Dossier complet"},
-    )
-    assert out.status_code == 200, out.text
-    assert out.json()["statut"] == "UNDER_REVIEW"
+    for numero in ("CDT_0001", "CDT_0002"):
+        out = client.post(
+            f"/api/admin/candidatures/{numero}/statut",
+            json={"statut": "UNDER_REVIEW", "commentaire": "Dossier complet"},
+        )
+        assert out.status_code == 200, out.text
 
     detail = client.get("/api/admin/candidatures/CDT_0001")
     assert detail.status_code == 200
-    assert detail.json()["historique"][0]["nouveau_statut"] == "UNDER_REVIEW"
+    assert detail.json()["dossier"]["statut"] == "UNDER_REVIEW"
     # La consultation est journalisée
     assert client.get("/api/admin/overview").json()["dernieres_actions"]
 
-    # Filière + composition
+    # L’API refuse toute date ou tout centre saisi sur un dossier isolé.
     maj = client.patch(
         "/api/admin/candidatures/CDT_0001",
         json={
@@ -793,31 +827,66 @@ def test_admin_decide_et_le_candidat_voit_le_statut(client, tmp_path):
             "date_compo": "2026-09-30",
         },
     )
-    assert maj.status_code == 200, maj.text
-    assert maj.json()["statut"] == "COMPOSITION_SCHEDULED"
+    assert maj.status_code == 422, maj.text
+    assert "communs" in maj.json()["detail"]
 
-    # Le candidat reconnecté voit la décision, jamais la note interne
+    calendrier = client.put(
+        "/api/admin/configuration/concours",
+        json={
+            "campagne": "Concours EMSP test",
+            "ouverture_inscriptions": None,
+            "cloture_inscriptions": None,
+            "date_composition": "2026-09-30",
+            "heure_composition": "09:00",
+            "centre_composition": "Campus commun, Abidjan",
+            "publication_resultats": "2026-10-10",
+        },
+    )
+    assert calendrier.status_code == 200, calendrier.text
+    avant_publication = client.post(
+        "/api/admin/campagne/resultats/publier", json={"confirmation": True}
+    )
+    assert avant_publication.status_code == 409, avant_publication.text
     client.post("/api/auth/logout")
+    clear_rate_limits()
+    client.post("/api/auth/login", json={"email": "candidat2@example.com", "password": "motdepasse123"})
+    assert client.get("/api/candidature/convocation").json()["disponible"] is False
+    assert client.get("/api/candidature/convocation/download").status_code == 404
+    client.post("/api/auth/logout")
+    clear_rate_limits()
+    client.post("/api/auth/login", json={"email": "scolarite@emsp.ci", "password": "adminmotdepasse1"})
+    publication = client.post(
+        "/api/admin/campagne/convocations", json={"confirmation": True}
+    )
+    assert publication.status_code == 200, publication.text
+    assert publication.json()["programmes"] == 2
+    assert publication.json()["convocations_publiees"] is True
+
+    # Le candidat ne voit rien avant la publication collective.
+    client.post("/api/auth/logout")
+    clear_rate_limits()
     client.post("/api/auth/login", json={"email": "candidat2@example.com", "password": "motdepasse123"})
     statut = client.get("/api/candidature/status")
     assert statut.json()["statut"] == "COMPOSITION_SCHEDULED"
     convocation = client.get("/api/candidature/convocation")
     assert convocation.json()["disponible"] is True
-    assert convocation.json()["centre_compo"] == "Campus 1, Abidjan"
+    assert convocation.json()["centre_compo"] == "Campus commun, Abidjan"
+    assert convocation.json()["date_compo"] == "2026-09-30"
     convocation_pdf = client.get("/api/candidature/convocation/download")
     assert convocation_pdf.status_code == 200, convocation_pdf.text
     assert convocation_pdf.headers["content-type"].startswith("application/pdf")
     assert b"Aya Marie" in convocation_pdf.content
     assert b"Kouassi" in convocation_pdf.content
-    assert b"Campus 1" in convocation_pdf.content
+    assert b"Campus commun" in convocation_pdf.content
     assert b"Abidjan" in convocation_pdf.content
     assert b"\xff\xd8\xff" in convocation_pdf.content  # logo EMSP intégré
     # Le candidat ne doit pas pouvoir lire les champs d'administration
     corps = client.get("/api/candidature").text
     assert "note_interne" not in corps
 
-    # Publication du jury puis vérification du message et du PDF personnalisés.
+    # Une première décision ne révèle aucun résultat tant que le jury n’a pas fini.
     client.post("/api/auth/logout")
+    clear_rate_limits()
     client.post("/api/auth/login", json={"email": "scolarite@emsp.ci", "password": "adminmotdepasse1"})
     decision = client.post(
         "/api/admin/candidatures/CDT_0001/statut",
@@ -825,16 +894,59 @@ def test_admin_decide_et_le_candidat_voit_le_statut(client, tmp_path):
     )
     assert decision.status_code == 200, decision.text
     client.post("/api/auth/logout")
+    clear_rate_limits()
+    client.post("/api/auth/login", json={"email": "candidat2@example.com", "password": "motdepasse123"})
+    admission = client.get("/api/candidature/admission")
+    assert admission.status_code == 200, admission.text
+    assert admission.json()["disponible"] is False
+    assert "1 décision" in admission.json()["message"]
+    client.post("/api/auth/logout")
+    clear_rate_limits()
+    client.post("/api/auth/login", json={"email": "scolarite@emsp.ci", "password": "adminmotdepasse1"})
+    decision2 = client.post(
+        "/api/admin/candidatures/CDT_0002/statut",
+        json={"statut": "REJECTED", "commentaire": "Décision de test"},
+    )
+    assert decision2.status_code == 200, decision2.text
+    client.post("/api/auth/logout")
+    clear_rate_limits()
+    client.post("/api/auth/login", json={"email": "candidat2@example.com", "password": "motdepasse123"})
+    assert client.get("/api/candidature/admission").json()["disponible"] is False
+    assert client.get("/api/admis/public").json()["total"] == 0
+    client.post("/api/auth/logout")
+    clear_rate_limits()
+    client.post("/api/auth/login", json={"email": "scolarite@emsp.ci", "password": "adminmotdepasse1"})
+    publication_resultats = client.post(
+        "/api/admin/campagne/resultats/publier", json={"confirmation": True}
+    )
+    assert publication_resultats.status_code == 200, publication_resultats.text
+    client.post("/api/auth/logout")
+    clear_rate_limits()
     client.post("/api/auth/login", json={"email": "candidat2@example.com", "password": "motdepasse123"})
     admission = client.get("/api/candidature/admission")
     assert admission.status_code == 200, admission.text
     assert admission.json()["disponible"] is True
+    assert admission.json()["date_publication"] == "2026-10-10"
     assert "Aya Marie Kouassi" in admission.json()["message"]
     certificat = client.get("/api/candidature/admission/certificat.pdf")
     assert certificat.status_code == 200, certificat.text
     assert b"Aya Marie" in certificat.content
     assert b"Kouassi" in certificat.content
+    assert b"10/10/2026" in certificat.content
     assert b"\xff\xd8\xff" in certificat.content
+
+    # Le second résultat et son attestation deviennent disponibles ensemble.
+    client.post("/api/auth/logout")
+    clear_rate_limits()
+    client.post("/api/auth/login", json={"email": "candidat3@example.com", "password": "motdepasse123"})
+    admission2 = client.get("/api/candidature/admission")
+    assert admission2.status_code == 200, admission2.text
+    assert admission2.json()["disponible"] is True
+    assert admission2.json()["date_publication"] == "2026-10-10"
+    assert admission2.json()["admis"] is False
+    certificat2 = client.get("/api/candidature/admission/certificat.pdf")
+    assert certificat2.status_code == 200, certificat2.text
+    assert b"10/10/2026" in certificat2.content
 
 
 def test_admin_statut_inconnu_refuse(client, tmp_path):

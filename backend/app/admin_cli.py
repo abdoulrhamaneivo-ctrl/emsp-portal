@@ -1,7 +1,7 @@
 """Promotion d'un administrateur existant et inventaire des comptes.
 
 Usage (depuis ``backend/``) :
-    python -m app.admin_cli promote --email admin@emsp.ci
+    python -m app.admin_cli promote --email admin@demo.emsp.ci
     python -m app.admin_cli list
 
 La promotion conserve l'identifiant, le mot de passe et l'état du compte. Ce

@@ -351,5 +351,7 @@ class ParametresConcours(Base):
     heure_composition: Mapped[str | None] = mapped_column(String(5), nullable=True)
     centre_composition: Mapped[str | None] = mapped_column(String(255), nullable=True)
     publication_resultats: Mapped[Date | None] = mapped_column(Date, nullable=True)
+    convocations_publiees_le: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resultats_publies_le: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     updated_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow, onupdate=_utcnow)

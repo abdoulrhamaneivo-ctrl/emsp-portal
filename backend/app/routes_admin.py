@@ -27,6 +27,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_user, hash_password
+from app.campaign import deliberation_complete, requete_cohorte
 from app.config import settings
 from app.db import SessionLocal, get_db
 from app.demo_downloads import read_or_rebuild_demo_document
@@ -144,6 +145,7 @@ def _utcnow() -> datetime:
 def _envoyer_convocations_en_arriere_plan(en_attente: list[tuple[str, str]]) -> None:
     """Envoie le lot hors requête HTTP et rend chaque échec retentable."""
     with SessionLocal() as db:
+        calendrier = db.get(ParametresConcours, 1)
         for numero, jeton in en_attente:
             candidature = db.get(Candidature, numero)
             if candidature is None or candidature.convocation_email_started_at is None:
@@ -152,11 +154,16 @@ def _envoyer_convocations_en_arriere_plan(en_attente: list[tuple[str, str]]) -> 
                 continue  # une nouvelle campagne a remplacé ce lot.
             succes = False
             try:
-                if candidature.date_compo and candidature.centre_compo:
+                if (
+                    calendrier
+                    and calendrier.convocations_publiees_le
+                    and calendrier.date_composition
+                    and calendrier.centre_composition
+                ):
                     succes = send_convocation_notification(
                         candidature.email, candidature.prenoms or "", candidature.numero_dossier,
-                        candidature.date_compo.strftime("%d/%m/%Y"),
-                        candidature.heure_compo or "", candidature.centre_compo,
+                        calendrier.date_composition.strftime("%d/%m/%Y"),
+                        calendrier.heure_composition or "", calendrier.centre_composition,
                     )
             except Exception:
                 succes = False
@@ -178,7 +185,18 @@ def _envoyer_resultats_en_arriere_plan(en_attente: list[tuple[str, str]]) -> Non
                 continue
             succes = False
             try:
-                if candidature.admis_concours is not None:
+                calendrier = db.get(ParametresConcours, 1)
+                complete, _, _ = deliberation_complete(db)
+                if (
+                    candidature.admis_concours is not None
+                    and calendrier
+                    and calendrier.resultats_publies_le
+                    and complete
+                    and (
+                        not calendrier.publication_resultats
+                        or date.today() >= calendrier.publication_resultats
+                    )
+                ):
                     succes = send_result_notification(
                         candidature.email, candidature.prenoms or "", candidature.numero_dossier,
                     )
@@ -340,6 +358,8 @@ def _configuration_dict(db: Session) -> dict:
             "heure_composition": concours.heure_composition if concours else None,
             "centre_composition": concours.centre_composition if concours else None,
             "publication_resultats": _date_iso(concours.publication_resultats) if concours else None,
+            "convocations_publiees_le": concours.convocations_publiees_le.isoformat() if concours and concours.convocations_publiees_le else None,
+            "resultats_publies_le": concours.resultats_publies_le.isoformat() if concours and concours.resultats_publies_le else None,
         },
         "filieres": [
             {"code": p.code, "libelle": p.libelle, "description": p.description, "actif": p.actif, "ordre": p.ordre}
@@ -374,8 +394,27 @@ def modifier_configuration_concours(
     if row is None:
         row = ParametresConcours(id=1, campagne=payload.campagne)
         db.add(row)
+    ancien_calendrier = (
+        row.date_composition,
+        row.heure_composition,
+        row.centre_composition,
+        row.publication_resultats,
+    )
     for key, value in payload.model_dump().items():
         setattr(row, key, value.strip() if isinstance(value, str) else value)
+    nouveau_calendrier = (
+        row.date_composition,
+        row.heure_composition,
+        row.centre_composition,
+        row.publication_resultats,
+    )
+    if ancien_calendrier[:3] != nouveau_calendrier[:3]:
+        row.convocations_publiees_le = None
+        for dossier in requete_cohorte(db).all():
+            dossier.convocation_email_sent_at = None
+            dossier.convocation_email_started_at = None
+    if ancien_calendrier[3] != nouveau_calendrier[3]:
+        row.resultats_publies_le = None
     row.updated_by = admin.email
     journaliser(db, admin, "MODIFIE_CALENDRIER_CONCOURS", detail=payload.campagne, request=request)
     db.commit()
@@ -504,23 +543,39 @@ def apercu_campagne(
     db: Session = Depends(get_db), admin: User = Depends(require_super_admin),
 ) -> dict:
     concours = db.get(ParametresConcours, 1)
-    convocations_query = db.query(func.count(Candidature.numero_dossier)).filter(
-        Candidature.statut.in_(("SUBMITTED", "UNDER_REVIEW", "VALIDATED", "RETAINED", "COMPOSITION_SCHEDULED")),
-    )
     calendrier_complet = bool(concours and concours.date_composition and concours.centre_composition)
-    if calendrier_complet:
-        convocations_query = convocations_query.filter(or_(
-            Candidature.date_compo.is_(None), Candidature.date_compo != concours.date_composition,
-            Candidature.heure_compo != concours.heure_composition,
-            Candidature.centre_compo != concours.centre_composition,
-            Candidature.convocation_email_sent_at.is_(None),
-        ))
-    convocations = convocations_query.scalar() or 0
+    cohorte_convocations = requete_cohorte(db).with_entities(func.count(Candidature.numero_dossier)).scalar() or 0
+    if concours and concours.convocations_publiees_le:
+        convocations = (
+            requete_cohorte(db)
+            .filter(Candidature.convocation_email_sent_at.is_(None))
+            .with_entities(func.count(Candidature.numero_dossier))
+            .scalar() or 0
+        ) if brevo_is_configured() else 0
+    else:
+        convocations = cohorte_convocations
+    complete, total_resultats, en_attente = deliberation_complete(db)
     resultats = db.query(func.count(Candidature.numero_dossier)).filter(
         Candidature.admis_concours.is_not(None), Candidature.result_email_sent_at.is_(None),
     ).scalar() or 0
-    return {"convocations_a_programmer": convocations, "resultats_a_notifier": resultats,
-            "calendrier_complet": calendrier_complet, "brevo_configure": brevo_is_configured()}
+    publication_prete = bool(
+        complete
+        and concours
+        and concours.publication_resultats
+        and date.today() >= concours.publication_resultats
+    )
+    return {
+        "convocations_a_programmer": convocations,
+        "convocations_publiees": bool(concours and concours.convocations_publiees_le),
+        "candidats_convoques": cohorte_convocations,
+        "resultats_a_notifier": resultats,
+        "resultats_publies": bool(concours and concours.resultats_publies_le),
+        "resultats_prets_publication": publication_prete,
+        "dossiers_sans_decision": en_attente,
+        "dossiers_a_deliberer": total_resultats,
+        "calendrier_complet": calendrier_complet,
+        "brevo_configure": brevo_is_configured(),
+    }
 
 
 @router.post("/campagne/convocations")
@@ -533,26 +588,30 @@ def programmer_convocations(
     concours = db.get(ParametresConcours, 1)
     if not concours or not concours.date_composition or not concours.centre_composition:
         raise HTTPException(status_code=409, detail="Enregistrez d’abord la date et le centre du concours.")
-    candidates = db.query(Candidature).filter(
-        Candidature.statut.in_(("SUBMITTED", "UNDER_REVIEW", "VALIDATED", "RETAINED", "COMPOSITION_SCHEDULED")),
-    ).order_by(Candidature.numero_dossier).all()
-    changed = 0
-    for c in candidates:
-        if c.date_compo != concours.date_composition or c.heure_compo != concours.heure_composition or c.centre_compo != concours.centre_composition:
-            c.date_compo = concours.date_composition
-            c.heure_compo = concours.heure_composition
-            c.centre_compo = concours.centre_composition
+    candidates = requete_cohorte(db).order_by(Candidature.numero_dossier).all()
+    if not candidates:
+        raise HTTPException(status_code=409, detail="Aucun dossier soumis ne fait partie de cette campagne.")
+    premiere_publication = concours.convocations_publiees_le is None
+    concours.convocations_publiees_le = concours.convocations_publiees_le or _utcnow()
+    if premiere_publication:
+        for c in candidates:
             c.convocation_email_sent_at = None
             c.convocation_email_started_at = None
-            if c.statut != "COMPOSITION_SCHEDULED":
-                ancien = c.statut
-                c.statut = "COMPOSITION_SCHEDULED"
-                db.add(HistoriqueStatut(
-                    numero_dossier=c.numero_dossier, ancien_statut=ancien,
-                    nouveau_statut=c.statut, commentaire="Convocation programmée en campagne",
-                    par_admin=admin.email,
-                ))
-            changed += 1
+    changed = 0
+    for c in candidates:
+        c.date_compo = concours.date_composition
+        c.heure_compo = concours.heure_composition
+        c.centre_compo = concours.centre_composition
+        if c.statut not in {"COMPOSITION_SCHEDULED", "ADMITTED", "REJECTED"}:
+            ancien = c.statut
+            c.statut = "COMPOSITION_SCHEDULED"
+            c.reviewed_at = _utcnow()
+            db.add(HistoriqueStatut(
+                numero_dossier=c.numero_dossier, ancien_statut=ancien,
+                nouveau_statut=c.statut, commentaire="Convocation publiée pour toute la campagne",
+                par_admin=admin.email,
+            ))
+        changed += 1
     db.flush()
     en_attente: list[tuple[str, str]] = []
     if brevo_is_configured():
@@ -566,11 +625,60 @@ def programmer_convocations(
             jeton = maintenant + timedelta(microseconds=index + 1)
             c.convocation_email_started_at = jeton
             en_attente.append((c.numero_dossier, jeton.isoformat()))
-    journaliser(db, admin, "CAMPAGNE_CONVOCATIONS", detail=f"{changed} programmée(s), {len(en_attente)} notification(s) en file", request=request)
+    action = "PUBLIE_CONVOCATIONS_CAMPAGNE" if premiere_publication else "RENVOIE_NOTIFICATIONS_CONVOCATIONS"
+    journaliser(db, admin, action, detail=f"{changed} dossier(s), {len(en_attente)} notification(s) en file", request=request)
     db.commit()
     if en_attente:
         background_tasks.add_task(_envoyer_convocations_en_arriere_plan, en_attente)
-    return {"message": f"{changed} dossier(s) programmés. {len(en_attente)} notification(s) mise(s) en file d’envoi.", "programmes": changed, "emails_queued": len(en_attente), "brevo_configure": brevo_is_configured()}
+    return {
+        "message": (
+            f"Les convocations communes sont publiées pour les {changed} dossiers de la campagne."
+            if premiere_publication else f"Les informations communes sont confirmées pour {changed} dossiers."
+        ),
+        "programmes": changed,
+        "emails_queued": len(en_attente),
+        "brevo_configure": brevo_is_configured(),
+        "convocations_publiees": True,
+        "publication_le": concours.convocations_publiees_le.isoformat(),
+    }
+
+
+@router.post("/campagne/resultats/publier")
+def publier_resultats_campagne(
+    payload: BulkConfirmation, db: Session = Depends(get_db),
+    admin: User = Depends(require_super_admin), request: Request = None,
+) -> dict:
+    """Rend visibles les décisions uniquement après délibération complète."""
+    if not payload.confirmation:
+        raise HTTPException(status_code=422, detail="Confirmez explicitement la publication collective.")
+    concours = db.get(ParametresConcours, 1)
+    if not concours or not concours.publication_resultats:
+        raise HTTPException(status_code=409, detail="Enregistrez d’abord la date commune de publication des résultats.")
+    if date.today() < concours.publication_resultats:
+        raise HTTPException(
+            status_code=409,
+            detail=f"La publication collective est prévue le {concours.publication_resultats.strftime('%d/%m/%Y')}.",
+        )
+    complete, total, en_attente = deliberation_complete(db)
+    if not complete:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Publication bloquée : {en_attente} dossier(s) de la cohorte n’ont pas encore de décision du jury.",
+        )
+    if concours.resultats_publies_le:
+        return {
+            "message": f"Les résultats des {total} dossiers sont déjà publiés collectivement.",
+            "resultats_publies": True,
+            "publication_le": concours.resultats_publies_le.isoformat(),
+        }
+    concours.resultats_publies_le = _utcnow()
+    journaliser(db, admin, "PUBLIE_RESULTATS_CAMPAGNE", detail=f"{total} décision(s)", request=request)
+    db.commit()
+    return {
+        "message": f"Les résultats des {total} dossiers sont maintenant publiés ensemble.",
+        "resultats_publies": True,
+        "publication_le": concours.resultats_publies_le.isoformat(),
+    }
 
 
 @router.post("/campagne/resultats/notifier")
@@ -580,11 +688,14 @@ def notifier_resultats_publies(
 ) -> dict:
     if not payload.confirmation:
         raise HTTPException(status_code=422, detail="Confirmez explicitement l’envoi groupé.")
-    if not brevo_is_configured():
-        raise HTTPException(status_code=503, detail="Brevo n’est pas configuré : aucun résultat n’a été notifié.")
     calendrier = db.get(ParametresConcours, 1)
+    complete, _, _ = deliberation_complete(db)
+    if not calendrier or not calendrier.resultats_publies_le or not complete:
+        raise HTTPException(status_code=409, detail="Publiez d’abord les résultats pour toute la cohorte.")
     if calendrier and calendrier.publication_resultats and date.today() < calendrier.publication_resultats:
         raise HTTPException(status_code=409, detail=f"La publication est prévue le {calendrier.publication_resultats.strftime('%d/%m/%Y')}.")
+    if not brevo_is_configured():
+        raise HTTPException(status_code=503, detail="Brevo n’est pas configuré : les résultats restent consultables dans l’espace candidat, aucun e-mail n’a été envoyé.")
     # Seules les décisions humaines déjà écrites par le jury peuvent être notifiées.
     candidates = db.query(Candidature).filter(
         Candidature.admis_concours.is_not(None), Candidature.result_email_sent_at.is_(None),
@@ -689,6 +800,7 @@ def detail_candidature(
     request: Request = None,
 ) -> dict:
     c = _dossier(db, numero_dossier)
+    calendrier = db.get(ParametresConcours, 1)
     journaliser(db, admin, "CONSULTE_DOSSIER", c.numero_dossier, request=request)
     db.commit()
 
@@ -789,9 +901,9 @@ def detail_candidature(
                 "lien": c.tuteur2_lien,
                 "residence": c.tuteur2_residence,
             },
-            "date_compo": c.date_compo.isoformat() if c.date_compo else None,
-            "heure_compo": c.heure_compo,
-            "centre_compo": c.centre_compo,
+            "date_compo": calendrier.date_composition.isoformat() if calendrier and calendrier.date_composition else None,
+            "heure_compo": calendrier.heure_composition if calendrier else None,
+            "centre_compo": calendrier.centre_composition if calendrier else None,
             "notes_compo": {
                 "francais": c.note_francais_compo,
                 "math": c.note_math_compo,
@@ -841,22 +953,18 @@ def modifier_candidature(
             ),
         )
 
+    if {"date_compo", "heure_compo", "centre_compo"}.intersection(data):
+        raise HTTPException(
+            status_code=422,
+            detail="La date, l’heure et le centre sont communs à toute la campagne. Modifiez-les dans le calendrier du concours.",
+        )
+
     if "filiere_formation" in data and data["filiere_formation"] is not None:
         active_programs = {p.libelle for p in db.query(ProgrammeConcours).filter(ProgrammeConcours.actif.is_(True)).all()}
         if data["filiere_formation"] not in active_programs:
             raise HTTPException(status_code=422, detail="Filière inconnue ou inactive.")
-    ancienne_convocation = (c.date_compo, c.heure_compo, c.centre_compo)
-    if "date_compo" in data and data["date_compo"] is None:
-        c.date_compo = None
-    elif data.get("date_compo") is not None:
-        c.date_compo = data["date_compo"]
-
-    if "heure_compo" in data:
-        c.heure_compo = data["heure_compo"]
-
     for champ in (
         "filiere_formation",
-        "centre_compo",
         "note_interne",
         "note_francais_compo",
         "note_math_compo",
@@ -866,30 +974,13 @@ def modifier_candidature(
         if champ in data:
             setattr(c, champ, data[champ])
 
-    if ancienne_convocation != (c.date_compo, c.heure_compo, c.centre_compo):
-        c.convocation_email_sent_at = None
-        c.convocation_email_started_at = None
-
-    # Une convocation porte le dossier en « composition programmée ».
-    if c.date_compo and c.centre_compo and c.statut in (
-        "DRAFT",
-        "SUBMITTED",
-        "UNDER_REVIEW",
-        "VALIDATED",
-        "RETAINED",
-    ):
-        ancien = c.statut
-        c.statut = "COMPOSITION_SCHEDULED"
-        c.reviewed_at = _utcnow()
-        db.add(
-            HistoriqueStatut(
-                numero_dossier=c.numero_dossier,
-                ancien_statut=ancien,
-                nouveau_statut=c.statut,
-                commentaire="Convocation programmée",
-                par_admin=admin.email,
-            )
-        )
+    if any(key in data for key in (
+        "filiere_formation", "note_francais_compo", "note_math_compo",
+        "note_anglais_compo", "note_psycho_compo",
+    )):
+        calendrier = db.get(ParametresConcours, 1)
+        if calendrier and calendrier.resultats_publies_le:
+            calendrier.resultats_publies_le = None
 
     journaliser(
         db,
@@ -917,6 +1008,11 @@ def changer_statut(
     nouveau = payload.statut.strip().upper()
     if nouveau not in STATUTS_ADMIN:
         raise HTTPException(status_code=422, detail="Statut inconnu.")
+    if nouveau == "COMPOSITION_SCHEDULED" and c.statut != "COMPOSITION_SCHEDULED":
+        raise HTTPException(
+            status_code=422,
+            detail="La composition se programme collectivement depuis les actions de campagne.",
+        )
     if c.statut == nouveau:
         return {"message": "Statut inchangé.", "statut": c.statut,
                 "statut_label": STATUT_LABELS[nouveau]}
@@ -939,6 +1035,12 @@ def changer_statut(
         # doit pouvoir être envoyée explicitement depuis la campagne.
         c.result_email_sent_at = None
         c.result_email_started_at = None
+    if (ancien in {"ADMITTED", "REJECTED"}) != (nouveau in {"ADMITTED", "REJECTED"}) or (
+        ancien in {"ADMITTED", "REJECTED"} and nouveau != ancien
+    ):
+        calendrier = db.get(ParametresConcours, 1)
+        if calendrier:
+            calendrier.resultats_publies_le = None
 
     db.add(
         HistoriqueStatut(
@@ -1028,26 +1130,17 @@ def telecharger_convocation_generee(
     admin: User = Depends(require_admin),
     request: Request = None,
 ):
-    """Télécharge la convocation EMSP avec logo, ou le PDF signé déposé."""
+    """Génère un exemplaire nominatif avec le calendrier commun de campagne."""
     dossier = _dossier(db, numero_dossier)
-    if not dossier.date_compo or not dossier.centre_compo:
+    calendrier = db.get(ParametresConcours, 1)
+    if not calendrier or not calendrier.date_composition or not calendrier.centre_composition:
         raise HTTPException(status_code=409, detail="Enregistrez d’abord la date et le centre de composition.")
-    document = db.query(DocumentCandidature).filter(
-        DocumentCandidature.numero_dossier == dossier.numero_dossier,
-        DocumentCandidature.type_document == "convocation",
-    ).first()
-    if document is not None:
-        if str(dossier.email or "").lower().endswith("@demo.emsp.ci"):
-            pdf = build_convocation_pdf(dossier)
-        else:
-            try:
-                pdf = _service().read_file(document.chemin_relatif)
-            except FileNotFoundError:
-                pdf = build_convocation_pdf(dossier)
-            except Exception as exc:
-                raise HTTPException(status_code=503, detail="La convocation déposée est momentanément inaccessible.") from exc
-    else:
-        pdf = build_convocation_pdf(dossier)
+    pdf = build_convocation_pdf(
+        dossier,
+        date_compo=calendrier.date_composition,
+        heure_compo=calendrier.heure_composition,
+        centre_compo=calendrier.centre_composition,
+    )
     journaliser(db, admin, "GENERE_CONVOCATION_PDF", dossier.numero_dossier, request=request)
     db.commit()
     return Response(
@@ -1068,7 +1161,11 @@ def telecharger_resultat_genere(
     dossier = _dossier(db, numero_dossier)
     if dossier.admis_concours is None:
         raise HTTPException(status_code=409, detail="Publiez d’abord la décision officielle du jury.")
-    pdf = build_result_certificate_pdf(dossier)
+    calendrier = db.get(ParametresConcours, 1)
+    pdf = build_result_certificate_pdf(
+        dossier,
+        date_publication=calendrier.publication_resultats if calendrier else None,
+    )
     journaliser(db, admin, "GENERE_RESULTAT_PDF", dossier.numero_dossier, request=request)
     db.commit()
     return Response(
@@ -1087,60 +1184,12 @@ async def deposer_convocation(
     admin: User = Depends(require_admin),
     request: Request = None,
 ) -> dict:
-    """Dépose le PDF officiel de convocation dans le dossier du candidat."""
-    c = _dossier(db, numero_dossier)
-    service = _service()
-    try:
-        content = await file.read()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Le fichier n'a pas pu être lu.")
-
-    nom_original = os.path.basename((file.filename or "convocation.pdf").replace("\\", "/"))
-    try:
-        # store() valide (PDF uniquement) et renvoie (nom_stockage, chemin_relatif)
-        nom_stockage, chemin_relatif = service.store(
-            c.numero_dossier, "convocation", nom_original, bytes(content)
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-    ancien = db.query(DocumentCandidature).filter(
-        DocumentCandidature.numero_dossier == c.numero_dossier,
-        DocumentCandidature.type_document == "convocation",
-    ).first()
-    if ancien is not None and ancien.chemin_relatif != chemin_relatif:
-        # On ne supprime l'ancien fichier qu'APRÈS le dépôt du nouveau.
-        try:
-            service.delete_file(ancien.chemin_relatif)
-        except ValueError:
-            pass
-    if ancien is not None:
-        ancien.nom_original = nom_original
-        ancien.nom_stockage = nom_stockage
-        ancien.chemin_relatif = chemin_relatif
-        ancien.mime_type = "application/pdf"
-        ancien.taille = len(content)
-        ancien.sha256 = hashlib.sha256(bytes(content)).hexdigest()
-        ancien.statut = "UPLOADED"
-        ancien.updated_at = _utcnow()
-        db.add(ancien)
-    else:
-        db.add(
-            DocumentCandidature(
-                numero_dossier=c.numero_dossier,
-                type_document="convocation",
-                nom_original=nom_original,
-                nom_stockage=nom_stockage,
-                chemin_relatif=chemin_relatif,
-                mime_type="application/pdf",
-                taille=len(content),
-                sha256=hashlib.sha256(bytes(content)).hexdigest(),
-                statut="UPLOADED",
-            )
-        )
-    journaliser(db, admin, "DEPOSE_CONVOCATION", c.numero_dossier, nom_original, request)
-    db.commit()
-    return {"message": "Convocation déposée.", "numero_dossier": c.numero_dossier}
+    """L'ancienne publication individuelle est bloquée au niveau serveur."""
+    _dossier(db, numero_dossier)
+    raise HTTPException(
+        status_code=409,
+        detail="Les convocations sont générées depuis le calendrier commun puis publiées pour toute la campagne.",
+    )
 
 
 # ───────────────────────────── messages de contact ─────────────────────────────

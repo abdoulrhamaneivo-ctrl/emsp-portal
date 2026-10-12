@@ -16,6 +16,8 @@ services:
         sync: false
       - key: APP_PUBLIC_URL
         sync: false
+      - key: ADMIN_EMAIL
+        sync: false
       - key: DOCUMENT_STORAGE_BACKEND
         value: s3
       - key: DOCUMENT_STORAGE_BUCKET

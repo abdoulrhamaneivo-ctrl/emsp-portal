@@ -741,9 +741,9 @@
     $(`[data-result-heading]`, resultView).innerHTML = data.admis ? "Félicitations,<br /><em>vous êtes admis.</em>" : "La décision<br /><em>du jury est publiée.</em>";
     $(`[data-result-message]`, resultView).textContent = data.message;
     if (data.filiere_formation) { $(`[data-result-specialty]`, resultView).hidden = false; $(`[data-result-program]`, resultView).textContent = data.filiere_formation; }
-    if (data.date_decision) {
+    if (data.date_publication) {
       $(`[data-result-meta]`, resultView).hidden = false;
-      $(`[data-result-date]`, resultView).textContent = dateFr(data.date_decision);
+      $(`[data-result-date]`, resultView).textContent = dateFr(data.date_publication);
     }
     const grades = Object.entries(data.notes || {});
     if (grades.length) {
@@ -816,7 +816,9 @@
       const resultDownload = $(`[data-admin-result-download]`, panel);
       resultDownload.hidden = d.admis_concours === null || d.admis_concours === undefined;
       resultDownload.href = `/api/admin/candidatures/${encodeURIComponent(numero)}/resultat.pdf`;
-      const decision = $(`[data-decision-form]`, panel); decision.elements.statut.value = d.statut || "SUBMITTED"; decision.elements.filiere_formation.value = d.filiere_formation || ""; decision.elements.date_compo.value = d.date_compo || ""; decision.elements.heure_compo.value = d.heure_compo || ""; decision.elements.centre_compo.value = d.centre_compo || ""; decision.elements.note_interne.value = d.note_interne || ""; decision.elements.note_francais_compo.value = d.notes_compo?.francais ?? ""; decision.elements.note_math_compo.value = d.notes_compo?.math ?? ""; decision.elements.note_anglais_compo.value = d.notes_compo?.anglais ?? ""; decision.elements.note_psycho_compo.value = d.notes_compo?.psycho ?? ""; decision.elements.motif_refus.value = d.motif_refus || "";
+      const decision = $(`[data-decision-form]`, panel); decision.elements.statut.value = d.statut || "SUBMITTED"; decision.elements.filiere_formation.value = d.filiere_formation || ""; decision.elements.note_interne.value = d.note_interne || ""; decision.elements.note_francais_compo.value = d.notes_compo?.francais ?? ""; decision.elements.note_math_compo.value = d.notes_compo?.math ?? ""; decision.elements.note_anglais_compo.value = d.notes_compo?.anglais ?? ""; decision.elements.note_psycho_compo.value = d.notes_compo?.psycho ?? ""; decision.elements.motif_refus.value = d.motif_refus || "";
+      const compositionOption = decision.elements.statut.querySelector('option[value="COMPOSITION_SCHEDULED"]');
+      if (compositionOption) compositionOption.disabled = d.statut !== "COMPOSITION_SCHEDULED";
       panel.scrollIntoView({ behavior: "smooth", block: "start" });
     }
     async function loadMessages() {
@@ -860,11 +862,16 @@
       if (!isSuperAdmin) return;
       const preview = await api("/api/admin/campagne/apercu");
       const target = $(`[data-campaign-preview]`, admin);
-      if (target) target.textContent = `${preview.convocations_a_programmer} dossier(s) à convoquer · ${preview.resultats_a_notifier} résultat(s) décidé(s) restant à notifier · Brevo ${preview.brevo_configure ? "connecté" : "non configuré"}${preview.calendrier_complet ? "." : " · enregistrez d’abord la date et le centre du concours."}`;
+      if (target) target.textContent = `${preview.convocations_publiees ? `Convocations publiées pour ${preview.candidats_convoques} dossier(s) · ${preview.convocations_a_programmer} notification(s) e-mail à envoyer` : `${preview.convocations_a_programmer} dossier(s) soumis à convoquer`} · ${preview.resultats_publies ? "résultats publiés collectivement" : `${preview.dossiers_sans_decision} décision(s) jury restante(s)`} · ${preview.resultats_a_notifier} e-mail(s) résultat à notifier · Brevo ${preview.brevo_configure ? "connecté" : "non configuré"}${preview.calendrier_complet ? "." : " · enregistrez d’abord la date et le centre communs."}`;
       const sendConvocations = $(`[data-send-convocations]`, admin);
-      if (sendConvocations) sendConvocations.disabled = !preview.calendrier_complet || !preview.convocations_a_programmer;
+      if (sendConvocations) {
+        sendConvocations.disabled = !preview.calendrier_complet || !preview.convocations_a_programmer;
+        sendConvocations.textContent = preview.convocations_publiees ? "Renvoyer les notifications de convocation" : "Publier les convocations pour tous";
+      }
+      const publishResults = $(`[data-publish-results]`, admin);
+      if (publishResults) publishResults.disabled = !preview.resultats_prets_publication || preview.resultats_publies;
       const notifyResults = $(`[data-notify-results]`, admin);
-      if (notifyResults) notifyResults.disabled = !preview.brevo_configure || !preview.resultats_a_notifier;
+      if (notifyResults) notifyResults.disabled = !preview.resultats_publies || !preview.brevo_configure || !preview.resultats_a_notifier;
     }
     async function loadConfiguration() {
       if (!isSuperAdmin) return;
@@ -927,18 +934,11 @@
       event.preventDefault(); if (!selectedDossier) return;
       const form = event.currentTarget; const button = $("[type=submit]", form); button.disabled = true;
       try {
-        const patch = {}; ["filiere_formation", "date_compo", "heure_compo", "centre_compo", "note_interne", "note_francais_compo", "note_math_compo", "note_anglais_compo", "note_psycho_compo"].forEach((key) => { const value = form.elements[key]?.value; if (value !== undefined && String(value).trim() !== "") patch[key] = form.elements[key].type === "number" ? Number(value) : value.trim(); });
+        const patch = {}; ["filiere_formation", "note_interne", "note_francais_compo", "note_math_compo", "note_anglais_compo", "note_psycho_compo"].forEach((key) => { const value = form.elements[key]?.value; if (value !== undefined && String(value).trim() !== "") patch[key] = form.elements[key].type === "number" ? Number(value) : value.trim(); });
         if (Object.keys(patch).length) await api(`/api/admin/candidatures/${encodeURIComponent(selectedDossier)}`, { method: "PATCH", body: JSON.stringify(patch) });
         await api(`/api/admin/candidatures/${encodeURIComponent(selectedDossier)}/statut`, { method: "POST", body: JSON.stringify({ statut: form.elements.statut.value, commentaire: form.elements.commentaire.value, motif_refus: form.elements.motif_refus.value }) });
         showFeedback(feedback, "Décision et informations du dossier enregistrées.", "success"); await loadOverview(); await loadApplications(); await openDossier(selectedDossier);
       } catch (error) { showFeedback(feedback, error.message, "error"); }
-      finally { button.disabled = false; }
-    });
-    $(`[data-convocation-form]`, admin)?.addEventListener("submit", async (event) => {
-      event.preventDefault(); if (!selectedDossier) return;
-      const form = event.currentTarget; const data = new FormData(form); const button = $("[type=submit]", form); button.disabled = true;
-      try { const result = await api(`/api/admin/candidatures/${encodeURIComponent(selectedDossier)}/convocation`, { method: "POST", body: data }); showFeedback(feedback, result.message, "success"); await openDossier(selectedDossier); }
-      catch (error) { showFeedback(feedback, error.message, "error"); }
       finally { button.disabled = false; }
     });
     $(`[data-message-filter]`, admin)?.addEventListener("change", () => loadMessages().catch((error) => showFeedback(feedback, error.message, "error")));
@@ -977,15 +977,27 @@
     });
     $(`[data-send-convocations]`, admin)?.addEventListener("click", async (event) => {
       const button = event.currentTarget;
-      if (!window.confirm("Programmer les candidats soumis avec le calendrier enregistré et envoyer les convocations par e-mail ?")) return;
+      const preview = await api("/api/admin/campagne/apercu");
+      const confirmation = preview.convocations_publiees
+        ? "Renvoyer par e-mail les notifications de convocation encore en attente ? Les convocations restent publiées avec le calendrier commun."
+        : "Publier maintenant une convocation nominative pour chaque dossier soumis, avec la même date, la même heure et le même centre pour tous ? Si Brevo est configuré, un e-mail collectif de notification sera envoyé à chaque candidat.";
+      if (!window.confirm(confirmation)) return;
       button.disabled = true;
-      try { const result = await api("/api/admin/campagne/convocations", { method: "POST", body: JSON.stringify({ confirmation: true }) }); const note = result.brevo_configure ? `${result.emails_queued} e-mail(s) sont envoyés en arrière-plan.` : "Brevo n’est pas configuré : les dates sont appliquées, aucun e-mail n’a été envoyé."; showFeedback(feedback, `${result.message} ${note}`, result.brevo_configure ? "success" : "error"); await loadOverview(); await loadCampaignPreview(); }
+      try { const result = await api("/api/admin/campagne/convocations", { method: "POST", body: JSON.stringify({ confirmation: true }) }); const note = result.brevo_configure ? `${result.emails_queued} notification(s) partent en arrière-plan.` : "Brevo n’est pas configuré : les convocations restent disponibles dans les espaces candidats, sans e-mail."; showFeedback(feedback, `${result.message} ${note}`, "success"); await loadOverview(); await loadCampaignPreview(); }
+      catch (error) { showFeedback(feedback, error.message, "error"); }
+      finally { button.disabled = false; }
+    });
+    $(`[data-publish-results]`, admin)?.addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      if (!window.confirm("Publier ensemble les résultats de toute la cohorte ? Cette action n’est disponible qu’à la date configurée et lorsque chaque dossier soumis possède une décision du jury.")) return;
+      button.disabled = true;
+      try { const result = await api("/api/admin/campagne/resultats/publier", { method: "POST", body: JSON.stringify({ confirmation: true }) }); showFeedback(feedback, result.message, "success"); await loadOverview(); await loadCampaignPreview(); }
       catch (error) { showFeedback(feedback, error.message, "error"); }
       finally { button.disabled = false; }
     });
     $(`[data-notify-results]`, admin)?.addEventListener("click", async (event) => {
       const button = event.currentTarget;
-      if (!window.confirm("Envoyer un e-mail aux candidats dont la décision du jury est déjà enregistrée ? Aucune décision ne sera créée ou modifiée.")) return;
+      if (!window.confirm("Envoyer un e-mail groupé pour informer tous les candidats que les résultats sont disponibles ? Les décisions ne seront pas modifiées.")) return;
       button.disabled = true;
       try { const result = await api("/api/admin/campagne/resultats/notifier", { method: "POST", body: JSON.stringify({ confirmation: true }) }); showFeedback(feedback, result.message, "success"); await loadCampaignPreview(); }
       catch (error) { showFeedback(feedback, error.message, "error"); }

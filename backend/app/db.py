@@ -72,6 +72,8 @@ COLONNES_AJOUTEES = [
     ("candidatures", "convocation_email_started_at", "DATETIME"),
     ("candidatures", "result_email_sent_at", "DATETIME"),
     ("candidatures", "result_email_started_at", "DATETIME"),
+    ("parametres_concours", "convocations_publiees_le", "DATETIME"),
+    ("parametres_concours", "resultats_publies_le", "DATETIME"),
     # Un administrateur n'a pas de dossier candidat : la colonne doit être
     # nullable. SQLite ne sait pas relâcher une contrainte existante, on
     # reconstruit donc la table si nécessaire (voir _relacher_dossier).

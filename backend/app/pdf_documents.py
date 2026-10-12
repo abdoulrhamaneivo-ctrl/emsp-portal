@@ -154,7 +154,16 @@ def _make_pdf(page: _Page) -> bytes:
     return bytes(output)
 
 
-def build_convocation_pdf(candidature) -> bytes:
+def build_convocation_pdf(
+    candidature,
+    *,
+    date_compo: date | None = None,
+    heure_compo: str | None = None,
+    centre_compo: str | None = None,
+) -> bytes:
+    date_compo = date_compo if date_compo is not None else candidature.date_compo
+    heure_compo = heure_compo if heure_compo is not None else candidature.heure_compo
+    centre_compo = centre_compo if centre_compo is not None else candidature.centre_compo
     page = _Page()
     _header(page, "CONVOCATION AU CONCOURS", "Avis individuel de présentation aux épreuves")
     page.text(_PAGE_W / 2, 572, "Madame, Monsieur", 11, "F1", _MUTED, "center")
@@ -165,8 +174,8 @@ def build_convocation_pdf(candidature) -> bytes:
     page.fill(48, 458, 499, 34, _GREEN)
     page.text(_PAGE_W / 2, 470, "EST PRIÉ(E) DE SE PRÉSENTER AUX ÉPREUVES", 11, "F2", (1, 1, 1), "center")
 
-    boxes = [(48, "DATE", candidature.date_compo.strftime("%d/%m/%Y") if candidature.date_compo else "À confirmer"),
-             (218, "HEURE", candidature.heure_compo or "À confirmer"),
+    boxes = [(48, "DATE", date_compo.strftime("%d/%m/%Y") if date_compo else "À confirmer"),
+             (218, "HEURE", heure_compo or "À confirmer"),
              (388, "DOSSIER", candidature.numero_dossier or "—")]
     for x, label, value in boxes:
         page.fill(x, 373, 159, 61, _PAPER)
@@ -174,7 +183,7 @@ def build_convocation_pdf(candidature) -> bytes:
         page.text(x + 12, 414, label, 7.5, "F2", _MUTED)
         page.text(x + 12, 390, value, 12, "F2", _GREEN)
     page.text(48, 346, "CENTRE D’EXAMEN", 8, "F2", _MUTED)
-    centre_y = _wrap(page, 48, 325, candidature.centre_compo or "À confirmer par l’administration", 64, size=13, leading=17, font="F2", color=_GREEN)
+    centre_y = _wrap(page, 48, 325, centre_compo or "À confirmer par l’administration", 64, size=13, leading=17, font="F2", color=_GREEN)
     page.line(48, centre_y - 4, 547, centre_y - 4, _GOLD, 0.7)
     page.text(48, centre_y - 28, "À PRÉVOIR", 8, "F2", _GREEN)
     instructions = "Présentez-vous 30 minutes avant l’heure indiquée, muni(e) de votre pièce d’identité et de cette convocation. En cas d’empêchement, contactez le service des admissions de l’EMSP."
@@ -185,9 +194,9 @@ def build_convocation_pdf(candidature) -> bytes:
     return _make_pdf(page)
 
 
-def build_result_certificate_pdf(candidature) -> bytes:
+def build_result_certificate_pdf(candidature, *, date_publication: date | None = None) -> bytes:
     page = _Page()
-    _header(page, "ATTESTATION DE RÉSULTAT", "Décision individuelle du jury d’admission")
+    _header(page, "ATTESTATION DE RÉSULTAT", "Publication collective du concours d’admission")
     admitted = candidature.admis_concours is True
     status_color = _GREEN if admitted else (0.47, 0.16, 0.12)
     page.fill(48, 551, 499, 39, status_color)
@@ -200,7 +209,7 @@ def build_result_certificate_pdf(candidature) -> bytes:
     page.line(113, 461, 482, 461, _GOLD, 0.8)
 
     cards = [(48, "NUMÉRO DE DOSSIER", candidature.numero_dossier or "—"),
-             (304, "DATE DE DÉLIBÉRATION", _date_fr(candidature.reviewed_at))]
+             (304, "DATE DE PUBLICATION", _date_fr(date_publication or candidature.reviewed_at))]
     for x, label, value in cards:
         page.fill(x, 403, 243, 43, _PAPER)
         page.stroke_rect(x, 403, 243, 43, _GOLD, 0.5)
